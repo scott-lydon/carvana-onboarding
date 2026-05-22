@@ -28,3 +28,10 @@ services:
         value: production
       - key: PORT
         value: "10000"
+      # Render sets NODE_ENV=production for the install step too, which makes
+      # `npm ci` skip devDependencies. Our build needs them (TypeScript,
+      # vite, tsc, @types/node, vitest types referenced in tsconfig.json).
+      # Setting NPM_CONFIG_PRODUCTION=false forces npm to install the full
+      # tree regardless of NODE_ENV. This is the Render-documented fix.
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
