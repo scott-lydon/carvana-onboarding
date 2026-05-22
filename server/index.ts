@@ -55,9 +55,13 @@ app.get("/api/health", (_req: Request, res: Response): void => {
   });
 });
 
-// Slice 1.2: VendorCascade wired here. If VINAUDIT_API_KEY is not set, the
-// cascade is undefined and the route handlers return 503 configuration_missing.
+// Slice 1.2: VendorCascade wired here. CarsXE is primary (self-service
+// signup, sandbox tier 100 calls/lifetime); VinAudit is secondary (B2B sales
+// gate pending). If neither key is set the cascade is undefined and the
+// route handlers return 503 configuration_missing.
 const cascade = createCascade({
+  CARSXE_API_KEY: process.env.CARSXE_API_KEY,
+  CARSXE_BASE_URL: process.env.CARSXE_BASE_URL,
   VINAUDIT_API_KEY: process.env.VINAUDIT_API_KEY,
   VINAUDIT_BASE_URL: process.env.VINAUDIT_BASE_URL,
 });
