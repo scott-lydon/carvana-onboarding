@@ -21,19 +21,24 @@ const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
 // In production the compiled server lives at dist-server/index.js relative to
-// the repo root, while the frontend build lives at dist/. Resolve both paths
-// from this file's own location so the server works regardless of where the
-// `node` process was launched from.
+// the repo root, while the frontend build lives at dist/. Resolve from this
+// file's own location so the server works regardless of where the `node`
+// process was launched from. Same parent in both dev and prod because tsx
+// runs from server/ and tsc emits to dist-server/ which is a sibling of dist/.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const REPO_ROOT = IS_PRODUCTION
-  ? path.resolve(__dirname, "..")
-  : path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(__dirname, "..");
 const FRONTEND_DIST = path.join(REPO_ROOT, "dist");
 
+// CORS in dev: allow Vite's dev server origin so the proxy works.
+// CORS in prod: same-origin (the SPA is served by Express itself), so a strict
+// allowlist with the canonical Render URL or no CORS at all is the right move.
+// For slice 0 the prod deploy URL is not finalized; lock down to same-origin
+// only (no Access-Control-Allow-Origin headers emitted for cross-origin).
+const corsOrigin = IS_PRODUCTION ? false : "http://localhost:5173";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
-app.use(cors());
+app.use(cors({ origin: corsOrigin }));
 
 app.get("/api/health", (_req: Request, res: Response): void => {
   res.json({
@@ -83,6 +88,6 @@ if (IS_PRODUCTION) {
 
 app.listen(PORT, () => {
   console.log(
-    `[server] carvana-onboarding-recovery-layer listening on :${PORT} (production=${IS_PRODUCTION})`,
+    `[server] carvana-onboarding-recovery-layer listening on :${String(PORT)} (production=${String(IS_PRODUCTION)})`,
   );
 });

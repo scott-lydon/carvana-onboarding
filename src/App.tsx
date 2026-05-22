@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { JSX } from "react";
 
 /**
  * Slice 0 scaffold for the entry form. Renders nothing useful yet beyond a
@@ -16,20 +17,21 @@ export function App(): JSX.Element {
   >("checking");
 
   useEffect(() => {
-    let cancelled = false;
     const controller = new AbortController();
     void (async () => {
       try {
         const res = await fetch("/api/health", { signal: controller.signal });
-        if (cancelled) return;
+        // If the AbortController fired during the await, fetch already threw.
+        // Reaching this point means we are still mounted.
         setServerStatus(res.ok ? "ok" : "unreachable");
-      } catch {
-        if (cancelled) return;
+      } catch (err) {
+        // The AbortError thrown by fetch on unmount is the expected case here;
+        // surface it as a benign no-op so we do not flip the UI on a teardown.
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setServerStatus("unreachable");
       }
     })();
     return () => {
-      cancelled = true;
       controller.abort();
     };
   }, []);

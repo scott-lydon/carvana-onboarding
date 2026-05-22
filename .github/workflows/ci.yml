@@ -34,6 +34,9 @@ jobs:
       - name: Unit and integration tests
         run: npm run test
 
+      - name: Property-based tests
+        run: npm run test:property
+
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 

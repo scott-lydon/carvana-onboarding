@@ -24,6 +24,12 @@ export default [
         ecmaVersion: "latest",
         sourceType: "module",
         ecmaFeatures: { jsx: true },
+        // projectService auto-discovers the nearest tsconfig per file, which
+        // lets the type-aware rules in strict-type-checked actually run
+        // (otherwise @typescript-eslint silently degrades to non-type-aware
+        // mode). Constitution mandates strict-type-checked, see line 19.
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
       },
     },
     plugins: {
@@ -33,7 +39,14 @@ export default [
     },
     settings: { react: { version: "detect" } },
     rules: {
-      ...tsPlugin.configs.recommended.rules,
+      // Strict type-checked rules per constitution.md (no-unsafe-*,
+      // no-floating-promises, prefer-nullish-coalescing, and more).
+      // Falls back to recommended if strict-type-checked isn't exported,
+      // which keeps lint working across @typescript-eslint minor versions.
+      ...(tsPlugin.configs["strict-type-checked"]?.rules ??
+        tsPlugin.configs.strict?.rules ??
+        tsPlugin.configs.recommended.rules),
+      ...(tsPlugin.configs["stylistic-type-checked"]?.rules ?? {}),
       ...reactPlugin.configs.recommended.rules,
       ...reactHooksPlugin.configs.recommended.rules,
       "react/react-in-jsx-scope": "off",

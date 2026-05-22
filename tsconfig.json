@@ -20,6 +20,6 @@
     "verbatimModuleSyntax": true,
     "types": ["vitest/globals", "node"]
   },
-  "include": ["src", "tests"],
+  "include": ["src", "tests", "vite.config.ts", "playwright.config.ts"],
   "exclude": ["server", "node_modules", "dist", "dist-server", "playwright-report"]
 }

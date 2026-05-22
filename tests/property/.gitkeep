@@ -1,0 +1,4 @@
+Property-based tests against the VendorCascade arrive in slice 1.4 once the
+cascade exists. Until then this directory exists so the `npm run test:property`
+script has a valid target and CI does not skip it. The `--passWithNoTests`
+flag on the script allows an empty directory.

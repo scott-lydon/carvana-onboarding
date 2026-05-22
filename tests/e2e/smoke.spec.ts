@@ -6,6 +6,9 @@ import { expect, test } from "@playwright/test";
 // reset, CAT-3 blame-the-user copy, CAT-5 account-before-value gate).
 test("scaffold loads and reports the server is reachable", async ({ page }) => {
   await page.goto("/");
+  // Document title check per tasks.md §0.6 done-criteria.
+  await expect(page).toHaveTitle(/Carvana Onboarding/);
+  // Plus the visible heading, because the user needs to see the page header.
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(
     "Carvana Onboarding Recovery Layer",
   );
