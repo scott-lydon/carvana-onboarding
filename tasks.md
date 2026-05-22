@@ -4,42 +4,52 @@
 
 ## Current slice
 
-### Slice 0 — scaffold + first failing test + deployable
+### Slice 2 — bot-detected differentiation copy + OCR fallback path (next up)
 
-- [ ] **0.1** Initialize Vite + React + TypeScript app at repo root; `package.json` named `carvana-onboarding-prototype`. Done-criteria: `npm run dev` opens a working dev server.
-- [ ] **0.2** Initialize Express + TypeScript server in `server/`. Done-criteria: `npm run server` returns `{ ok: true }` from `GET /api/health`.
-- [ ] **0.3** Wire root-level `npm run dev:all` to run client + server concurrently via `concurrently`. Done-criteria: one command spins up both.
-- [ ] **0.4** Install Vitest, Playwright, ESLint (`@typescript-eslint/strict-type-checked`), Prettier, `fast-check`. Done-criteria: each tool's CLI version prints when run.
-- [ ] **0.5** Add one failing Vitest test: `it('placeholder failing test', () => expect(true).toBe(false))`. Done-criteria: `npm run test` exits non-zero with one expected failure.
-- [ ] **0.6** Add one passing Playwright smoke test: navigate to the dev server, assert page title contains "Carvana Onboarding." Done-criteria: `npm run test:e2e` exits zero.
-- [ ] **0.7** Set up dual-push gitflow per `~/Documents/Claude/Projects/Gauntlet/CLAUDE.md`: create GitHub repo `scott-lydon/carvana-onboarding`, create GitLab repo `labs.gauntletai.com/scottlydon/carvana-onboarding`, configure `origin` with two push URLs. Done-criteria: `git ls-remote origin main` and `git ls-remote gitlab main` return matching hashes.
-- [ ] **0.8** Add `.github/workflows/ci.yml` running typecheck + lint + test on every push. Done-criteria: CI passes on the scaffold commit.
-- [ ] **0.9** Deploy scaffold to Render (one web service for the Express server + static React build). Done-criteria: a public URL serves the scaffold page.
-- [ ] **0.10** Run `./scripts/check-placeholders.sh` to verify the five foundational artifacts contain no template placeholders. Done-criteria: script exits zero with five PASS lines.
-- [ ] **0.11** Invoke `qa-adversary` sub-agent against slice 0. Done-criteria: report saved under `docs/qa-reports/slice-0.md` with verdict.
+(Slice 1 is COMPLETE and live at <https://carvana-onboarding.onrender.com>; see "Done slices" section below.)
+
+## Done slices
+
+### Slice 0 — scaffold + first failing test + deployable (COMPLETE)
+
+- [x] **0.1** Initialize Vite + React + TypeScript app at repo root; `package.json` named `carvana-onboarding-prototype`. Done-criteria: `npm run dev` opens a working dev server.
+- [x] **0.2** Initialize Express + TypeScript server in `server/`. Done-criteria: `npm run server` returns `{ ok: true }` from `GET /api/health`.
+- [x] **0.3** Wire root-level `npm run dev:all` to run client + server concurrently via `concurrently`. Done-criteria: one command spins up both.
+- [x] **0.4** Install Vitest, Playwright, ESLint (`@typescript-eslint/strict-type-checked`), Prettier, `fast-check`. Done-criteria: each tool's CLI version prints when run.
+- [x] **0.5** Add one failing Vitest test: `it('placeholder failing test', () => expect(true).toBe(false))`. Done-criteria: `npm run test` exits non-zero with one expected failure. **Stays failing on purpose per spec §0.5 — do NOT close.**
+- [x] **0.6** Add one passing Playwright smoke test: navigate to the dev server, assert page title contains "Carvana Onboarding." Done-criteria: `npm run test:e2e` exits zero.
+- [x] **0.7** Set up dual-push gitflow per `~/Documents/Claude/Projects/Gauntlet/CLAUDE.md`: create GitHub repo `scott-lydon/carvana-onboarding`, create GitLab repo `labs.gauntletai.com/scottlydon/carvana-onboarding`, configure `origin` with two push URLs. Done-criteria: `git ls-remote origin main` and `git ls-remote gitlab main` return matching hashes.
+- [x] **0.8** Add `.github/workflows/ci.yml` running typecheck + lint + test on every push. Done-criteria: CI passes on the scaffold commit.
+- [x] **0.9** Deploy scaffold to Render (one web service for the Express server + static React build). Done-criteria: a public URL serves the scaffold page.
+- [x] **0.10** Run `./scripts/check-placeholders.sh` to verify the five foundational artifacts contain no template placeholders. Done-criteria: script exits zero with five PASS lines.
+- [x] **0.11** Invoke `qa-adversary` sub-agent against slice 0. Done-criteria: report saved under `docs/qa-reports/slice-0.md` with verdict. (PASS verdict on follow-up at `docs/qa-reports/slice-0-fix-and-prebake.md`.)
+
+### Slice 1 — VendorCascade with CarsXE primary, plate happy path (US1) (COMPLETE)
+
+> NOTE: Carfax sandbox was the original target. After the Carfax dealer-vendor sales gate proved unworkable for a one-week prototype, CarsXE became the *prototype* primary (self-service signup, sandbox 100 calls/lifetime; production swap-back to Carfax is a one-line adapter change). VinAudit is the live fallback. See plan.md decisions table.
+
+- [x] **1.1** Domain types: `Plate`, `StateCode`, `Vin`, `Vehicle`, `LookupResult` (discriminated union of `Resolved | NotFound | TransientError | BotDetected | FormatError`). Validation in constructors. 14 tests covering EC1 (Texas asterisk normalization), EC2 (I/O/Q-permutation hint), EC4 (whitespace strip), EC5 (lowercase normalize). `src/lookup/types.ts`, `tests/unit/lookup-types.test.ts`.
+- [x] **1.2** VendorAdapter interface; **CarsXEAdapter** as live primary (`src/lookup/adapters/CarsXEAdapter.ts`, against `GET https://api.carsxe.com/platedecoder`); VinAuditAdapter as fallback shape (`src/lookup/adapters/VinAuditAdapter.ts`, awaiting B2B sales approval). Real HTTP, not mocked.
+- [x] **1.3** `VendorCascade` class taking an array of adapters, with `lookupByPlate(plate, state)` and `lookupByVin(vin)`. **8-second timeout per adapter** (bumped from 2s after Render cold-start). Short-circuits on `resolved` or `bot_detected`. `src/lookup/VendorCascade.ts`.
+- [x] **1.4** Property tests (`fast-check`, 200 runs each): for any sequence of [Resolved, NotFound, Error] vendor responses, VendorCascade returns the first Resolved OR a NotFound when exhausted OR a TransientError only when ALL vendors errored. `tests/property/cascade.property.test.ts`.
+- [x] **1.5** Express endpoints `POST /api/lookup/plate` and `POST /api/lookup/vin` wired to VendorCascade. Pattern-matches LookupResult kinds to HTTP statuses (200/400/404/429/503). Returns 503 `configuration_missing` when no API keys are set. `server/routes/lookup.ts`, `server/index.ts`.
+- [x] **1.6** React `EntryForm` component with License Plate / VIN tabs. Form-state preservation across errors (tab AND field values). Inlined `DegradationPanel` pattern-matches LookupResult to per-mode user-facing copy: resolved (green) / not_found (yellow with 3 recovery paths) / transient_error (red, "on our side, not yours") / bot_detected (warm-amber with brief link) / format_error (blue with field-specific reason) / configuration_missing ("demo warming up"). `src/components/EntryForm.tsx`. **Live at <https://carvana-onboarding.onrender.com>.**
+- [x] **1.7** ResultPanel responsibilities folded into DegradationPanel for slice 1.6 brevity. Vehicle data renders inline; estimated-offer copy deferred to slice 5 with the buy-side.
+- [x] **1.8** Manual confirmation of US1 happy path: `XRJ4041 / TX` resolves to `2021 Toyota Highlander (SUV)` in 1053ms via CarsXE, HTTP 200, no account requested. Playwright scenario deferred to slice 2 alongside the bot-detected differentiation test.
+- [x] **1.9** Invoke `qa-adversary` against slice 1. Latest report at `docs/qa-reports/slice-0-fix-and-prebake.md` (slice 1 prebake bundled in); fresh diff-range delegation against `b914f2b..HEAD` runs at the end of every slice-touching response per CLAUDE.md.
 
 ## Next slice
 
-### Slice 1 — VendorCascade with Carfax primary, plate happy path (US1)
-
-- [ ] **1.1** Domain types: `Plate`, `StateCode`, `Vin`, `Vehicle`, `LookupResult` (discriminated union of `Resolved | NotFound | Error`). Validation in constructors. Tests for each.
-- [ ] **1.2** VendorAdapter interface; one concrete adapter for Carfax QuickVIN Plus (sandbox / dev tier credentials in `.env.local`, NOT committed). Tests against recorded fixtures of real responses.
-- [ ] **1.3** `VendorCascade` class taking an array of adapters, with `lookupByPlate(plate, state)`. 2-second timeout per adapter. Returns `LookupResult`.
-- [ ] **1.4** Property tests (`fast-check`): for any sequence of [Resolved, NotFound, Error] vendor responses, VendorCascade returns the first Resolved OR a NotFound when exhausted OR an Error only when ALL vendors errored.
-- [ ] **1.5** Express endpoint `POST /api/lookup/plate` wired to VendorCascade. Integration test against the recorded fixtures.
-- [ ] **1.6** React EntryForm component, plate tab only. Plate input + state dropdown (alphabetical by state name with type-to-filter — fixes Carvana's S2 + the buy-vs-sell sort inconsistency). Submit calls `/api/lookup/plate`.
-- [ ] **1.7** React ResultPanel component, renders vehicle data + a hardcoded "estimated offer range" placeholder (real offer model is out of scope). NO account gate.
-- [ ] **1.8** Playwright scenario for US1: enter a known-good plate, see vehicle data within 2 seconds, no account requested.
-- [ ] **1.9** Invoke `qa-adversary` against slice 1.
+### Slice 2 — bot-detected differentiation copy + OCR fallback path (US3, US4)
 
 ## Backlog
 
-### Slice 2 — DataOne fallback (US2 cascade-fallback path)
+### Slice 2 (renumbered, was "DataOne fallback") — VinAudit live-fallback once B2B sales approves
 
-- [ ] **2.1** DataOne VendorAdapter implementation against their sandbox.
-- [ ] **2.2** Wire DataOne as the second adapter in VendorCascade.
-- [ ] **2.3** Integration test: primary returns NotFound, fallback returns Resolved, cascade returns Resolved-via-fallback.
-- [ ] **2.4** Playwright: known-Carfax-miss plate resolves via DataOne with a "we used our backup data source for this plate" transparency note.
+- [ ] **2.1** Receive VinAudit live API key (blocked on their B2B sales gate; signup completed 2026-05-21).
+- [ ] **2.2** Add `VINAUDIT_API_KEY` to Render env vars; redeploy.
+- [ ] **2.3** Integration test: CarsXE returns NotFound, VinAudit returns Resolved, cascade returns Resolved-via-VinAudit.
+- [ ] **2.4** Playwright: known-CarsXE-miss plate resolves via VinAudit with a "we used our backup data source for this plate" transparency note.
 - [ ] **2.5** qa-adversary on slice 2.
 
 ### Slice 3 — DegradationLayer + honest error copy (US2 cascade-exhausted, US3)

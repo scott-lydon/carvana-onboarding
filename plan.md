@@ -17,8 +17,8 @@ Browser
                                   │
 Server (Express on Node 22)       │
   ├─ /api/lookup/plate ──────────────► VendorCascade
-  │                                       ├─ Carfax QuickVIN Plus (primary)
-  │                                       └─ DataOne (fallback)
+  │                                       ├─ CarsXE platedecoder (prototype primary, live)
+  │                                       └─ VinAudit (fallback, pending B2B approval)
   ├─ /api/lookup/vin    ──────────────► same VendorCascade
   ├─ /api/ocr/recognize ◄────── crop ────┘
   │                            ──────────► Google Cloud Vision (OCR)
@@ -35,7 +35,7 @@ The full polished Mermaid version with Simple Icons logos lives in `website/inde
 Owns the plate / VIN tab state, the form fields, and the green-check / red-error indicators. Tab state is preserved across submission errors. Field values are preserved across submission errors. **This is the literal fix for finding S6** (Carvana silently resets tab + erases input on backend error).
 
 ### VendorCascade
-Pure domain module, no I/O of its own (takes vendor adapters as constructor args). Tries the primary vendor with a 2-second timeout. On miss or timeout, falls through to the fallback. On all-vendors-miss, returns a structured `NotFound` result with `lastVendorTried` and `attemptCount`. The DegradationLayer translates that into honest user copy. **This is the literal fix for finding S4** (Carvana blames the user instead of acknowledging a vendor gap).
+Pure domain module, no I/O of its own (takes vendor adapters as constructor args). Tries the primary vendor with an 8-second timeout (`DEFAULT_VENDOR_TIMEOUT_MS = 8_000`, bumped from 2s after a Render cold-start regression on 2026-05-22; see `src/lookup/VendorCascade.ts`). On miss or timeout, falls through to the fallback. Short-circuits on `bot_detected`. On all-vendors-miss, returns a structured `NotFound` result with `attemptedVendors` and `lastVendorTried`. The DegradationLayer translates that into honest user copy. **This is the literal fix for finding S4** (Carvana blames the user instead of acknowledging a vendor gap).
 
 ### OCRService
 Two paths. Server path: receives a cropped image from the browser, calls Google Cloud Vision, returns text + confidence. Client iOS path (recorded for the privacy slide): SwiftUI app uses `VNRecognizeTextRequest` on-device, returns text without a network round-trip. Both paths produce the same `OCRResult` shape so the rest of the system is OCR-source-agnostic.
@@ -83,8 +83,9 @@ Every named failure mode is a stable event name (e.g., `lookup.plate.primary_mis
 | Decision | What we chose | Alternative considered | Why |
 |---|---|---|---|
 | Architecture pattern | Drop-in API gateway (we sit between Carvana's frontend and their vendor) | Front-end overlay (we rewrite their entry component) | Gateway means Carvana keeps their stack; the integration story is "wire your vendor calls through us" which is what a real PM can buy. Overlay is easier to demo but harder to defend as a real integration. |
-| Primary vendor | Carfax QuickVIN Plus | DataOne, ClearVIN, VinAudit, PlateToVin | Per `research/plate-api-landscape.md`, Carfax is the industry's most-comprehensive plate-to-VIN data source and any Carvana-scale dealer already has it under their existing contract. The fix is "use the vendor you already pay for, correctly." |
-| Fallback vendor | DataOne Software | Carfax-only-with-retry | DataOne has independent coverage of fleet / commercial / specialty plates that Carfax can miss. Independent vendor = independent failure modes = real fallback. |
+| Primary vendor (production) | Carfax QuickVIN Plus | DataOne, ClearVIN, VinAudit, PlateToVin | Per `research/plate-api-landscape.md`, Carfax is the industry's most-comprehensive plate-to-VIN data source and any Carvana-scale dealer already has it under their existing contract. The fix is "use the vendor you already pay for, correctly." |
+| Primary vendor (prototype) | **CarsXE platedecoder** (live in slice 1) | Wait on Carfax dealer-vendor sales gate | Carfax requires a dealer-relationship sales call to issue sandbox credentials, which makes it unworkable for a one-week prototype. CarsXE offers self-service signup with a 100-call lifetime sandbox tier, lets us ship a working live demo *today*, and the swap to Carfax in production is a one-line adapter change because `VendorAdapter` hides the vendor specifics. |
+| Fallback vendor | VinAudit (slice 2, pending B2B approval) | DataOne, CarAPI | VinAudit's pricing and coverage are both reasonable for a fallback role; their signup is a B2B sales gate that we started on 2026-05-21 and are waiting on. CarsXE alone covers the slice 1 happy path; VinAudit adds independent failure modes once approved. |
 | OCR primary path | Browser `getUserMedia` + Google Cloud Vision server-side | Tesseract.js client-side | Tesseract.js works but accuracy on plates and VIN stickers is lower than cloud vision; per `research/plate-api-landscape.md` Apple Vision is the iOS gold standard and Google Vision is the web equivalent. Cost is negligible at $1.50 per 1k. |
 | iOS OCR demo | SwiftUI + Apple `VNRecognizeTextRequest` | React Native + Tesseract | Privacy story is the differentiator; on-device OCR with no PII leaving the phone is exactly the slide we want. SwiftUI is the user's preferred language. 30-second demo video, not the primary deliverable. |
 | Frontend framework | React + Vite + TypeScript | Next.js | Vite is lighter, faster local dev, and matches existing Gauntlet repos (`boxy-fractions`, `adversary`). Next.js would add SSR / SEO that the prototype does not need. |
