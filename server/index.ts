@@ -3,15 +3,33 @@
  * dev-loop sanity check and returns 501 NOT_IMPLEMENTED for the lookup and
  * OCR endpoints until slice 1 onward wires them up.
  *
+ * In production (NODE_ENV=production) the same process also serves the Vite
+ * build output (dist/) as static files, so Render can run this as a single
+ * web service rather than two.
+ *
  * The 501 responses are intentional: this is the dev-time placeholder that
  * the constitution's no-stub-data rule allows (it is not user-facing aggregate
  * data, it is an explicit "not implemented yet" signal to the client and to
  * qa-adversary).
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type Request, type Response } from "express";
 import cors from "cors";
 
 const PORT = Number(process.env.PORT ?? 3001);
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+
+// In production the compiled server lives at dist-server/index.js relative to
+// the repo root, while the frontend build lives at dist/. Resolve both paths
+// from this file's own location so the server works regardless of where the
+// `node` process was launched from.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = IS_PRODUCTION
+  ? path.resolve(__dirname, "..")
+  : path.resolve(__dirname, "..");
+const FRONTEND_DIST = path.join(REPO_ROOT, "dist");
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -54,6 +72,17 @@ app.post("/api/ocr/recognize", (_req: Request, res: Response): void => {
   });
 });
 
+// Static-serve the Vite build in production AFTER the /api routes are
+// registered so the API takes precedence over the SPA's index.html fallback.
+if (IS_PRODUCTION) {
+  app.use(express.static(FRONTEND_DIST));
+  app.get("*", (_req: Request, res: Response): void => {
+    res.sendFile(path.join(FRONTEND_DIST, "index.html"));
+  });
+}
+
 app.listen(PORT, () => {
-  console.log(`[server] carvana-onboarding-recovery-layer listening on :${PORT}`);
+  console.log(
+    `[server] carvana-onboarding-recovery-layer listening on :${PORT} (production=${IS_PRODUCTION})`,
+  );
 });

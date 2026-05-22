@@ -1,0 +1,30 @@
+# Render Blueprint for the Carvana Onboarding Recovery Layer prototype.
+#
+# One web service: Express serves the /api routes AND the Vite-built frontend
+# as static files in production. Single deploy unit, single URL, no CORS in
+# production.
+#
+# Manual deploy is preferred (matches the user's pattern from boxy-fractions
+# where auto-deploy bit them). Flip autoDeploy back to true once the demo is
+# stable and we want pushes to ship.
+#
+# One-time launch: in the Render dashboard, click "New" -> "Blueprint",
+# point at https://github.com/scott-lydon/carvana-onboarding, accept the
+# blueprint, set any env vars (none required for slice 0), click create.
+
+services:
+  - type: web
+    name: carvana-onboarding
+    runtime: node
+    region: oregon
+    plan: free
+    branch: main
+    autoDeploy: false
+    buildCommand: npm ci && npm run build && npm run build:server
+    startCommand: node dist-server/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
