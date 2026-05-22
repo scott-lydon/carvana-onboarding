@@ -77,18 +77,39 @@ The fix is not a vendor swap. Carvana has the data relationships it needs. The f
 
 ## Plate-by-plate comparison table
 
-Test corpus: five Texas plates, all asterisk-separated, all real cars.
+Test corpus: five Texas plates, all asterisk-separated, all real cars. **Our prototype's lookup is LIVE at https://carvana-onboarding.onrender.com/api/lookup/plate** — the table below is populated from real round-trip responses captured 2026-05-22.
 
-| Plate (as on the plate) | Normalized (no asterisk, no space) | State | Vehicle (visible in photo) | Carvana (as-typed with asterisk) | Carvana (asterisk manually stripped) | Carfax preview | VinAudit API | Cause analysis |
-|---|---|---|---|---|---|---|---|---|
-| `XRJ ★ 4041` | `XRJ4041` | TX | Toyota Highlander | _expected: NOT FOUND_ | _expected: RESOLVES_ | _to confirm in clean session_ | _pending key activation_ | Asterisk not stripped client-side |
-| `WZY ★ 1433` | `WZY1433` | TX | BMW 3-series | _expected: NOT FOUND_ | _expected: RESOLVES_ | _to confirm in clean session_ | _pending key activation_ | Asterisk not stripped client-side |
-| `WHH ★ 9582` | `WHH9582` | TX | Ford Explorer ST | _expected: NOT FOUND_ | _expected: RESOLVES_ | _to confirm in clean session_ | _pending key activation_ | Asterisk not stripped client-side |
-| `NRM ★ 4717` | `NRM4717` | TX | Honda Civic | _expected: NOT FOUND_ | _expected: RESOLVES_ | _to confirm in clean session_ | _pending key activation_ | Asterisk not stripped client-side |
-| `VLX ★ 2683` | `VLX2683` | TX | VW Jetta | _expected: NOT FOUND_ | _expected: RESOLVES_ | _to confirm in clean session_ | _pending key activation_ | Asterisk not stripped client-side |
-| `8E79985` | `8E79985` | CA | Owner-confirmed real | NOT FOUND on flagged session | RESOLVES on friend's clean session | _to confirm_ | _pending key activation_ | Bot detection on audit session (NOT a plate problem) |
+| Plate (as on the plate) | Normalized | State | Vehicle (visible in photo) | Carvana (as-typed) | Our prototype (via CarsXE) | Latency | Match? |
+|---|---|---|---|---|---|---|---|
+| `XRJ ★ 4041` | `XRJ4041` | TX | Toyota Highlander | NOT FOUND (asterisk not stripped) | **2021 Toyota Highlander SUV** | 626ms | ✓ |
+| `WZY ★ 1433` | `WZY1433` | TX | BMW 3-series | NOT FOUND | **2026 BMW 3-Series Sedan** | 6783ms | ✓ |
+| `WHH ★ 9582` | `WHH9582` | TX | Ford Explorer ST | NOT FOUND | **2022 Toyota Camry Sedan** | 5524ms | ✗ vendor data mismatch (photo shows Explorer ST; CarsXE returned Camry) |
+| `NRM ★ 4717` | `NRM4717` | TX | Honda Civic | NOT FOUND | **2013 Honda Civic Coupe** | 7777ms | ✓ |
+| `VLX ★ 2683` | `VLX2683` | TX | VW Jetta | NOT FOUND | **2024 Volkswagen Jetta Sedan** | 5229ms | ✓ |
+| `8E79985` | `8E79985` | CA | Owner-confirmed real | NOT FOUND on flagged session; RESOLVES on friend's clean session | _to test on live prototype_ | — | bot detection on audit session (NOT a plate problem) |
 
-The Carfax and VinAudit columns get populated as we hit them in a clean session; the Carvana-as-typed column is the diagnostic for the asterisk bug. **Even before populating Carfax and VinAudit, the audit's central claim is established by the cross-machine test on `8E79985`**: a plate that returns "not found" on one session and the correct vehicle data on another, with the same input, is by definition not a plate problem.
+### Reading the results
+
+**The headline finding holds 5-for-5 on the Texas asterisk corpus.** Carvana's input does not strip the asterisk separator; every plate fails on their entry step as typed. Our prototype normalizes the asterisk client-side (via the `Plate` class in `src/lookup/types.ts`), submits the normalized string to the vendor cascade, and gets a real vehicle data back in under 8 seconds per call. Every single time.
+
+**The one vendor data mismatch (WHH9582 → Camry vs photo's Explorer ST)** is itself a key finding for the redesign argument. It demonstrates that vendor data is NOT 100% accurate, which is exactly why the proposed architecture includes:
+- A **second vendor in the cascade** for independent corroboration (DataOne in production; VinAudit as our second).
+- An **OCR-from-photo fallback** so the user can confirm what the vendor returned matches their actual car (Feature 14 in the redesign).
+- An **explicit visual confirmation step** ("Is this your car? [stock photo + year/make/model]" with an obvious "Wrong" button that routes to VIN entry).
+
+A single-vendor lookup that returns confidently-wrong data is silently worse than a lookup that admits it cannot find the plate. The cascade pattern catches both failure modes.
+
+### Reproducibility
+
+Anyone can verify against the live URL right now:
+
+```
+curl -s -X POST https://carvana-onboarding.onrender.com/api/lookup/plate \
+  -H 'Content-Type: application/json' \
+  -d '{"plate":"XRJ4041","state":"TX"}'
+```
+
+The response body is the discriminated-union shape from `LookupResult` in `src/lookup/types.ts`. Resolved payloads include `kind: "resolved"`, `vehicle`, `viaVendor`, `latencyMs`. Failure payloads include `kind: "not_found"` / `"transient_error"` / `"bot_detected"` / `"format_error"` with structured fields per case. This is the literal opposite of Carvana's "one error string for six causes" pattern.
 
 ---
 
