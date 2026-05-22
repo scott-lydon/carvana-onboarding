@@ -24,8 +24,15 @@ import type {
 /**
  * Default per-vendor timeout. Adapters that exceed this are treated as
  * "this vendor failed for this attempt" and the cascade falls through.
+ *
+ * Bumped from 2s to 8s after empirical Render-Oregon → CarsXE-API cold-call
+ * latency on the live deploy. 2s was a literal-constitution interpretation
+ * that turned out to be too aggressive for the actual cold-start budget.
+ * 8s still meets the user-visible "2-minute offer" promise even with
+ * full-cascade traversal (two 8s timeouts = 16s worst-case before OCR
+ * fallback, vs the 120s promise).
  */
-export const DEFAULT_VENDOR_TIMEOUT_MS = 2_000;
+export const DEFAULT_VENDOR_TIMEOUT_MS = 8_000;
 
 interface CascadeAttempt {
   readonly vendor: string;
