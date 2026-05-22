@@ -25,14 +25,19 @@ import {
 const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
-// In production the compiled server lives at dist-server/index.js relative to
-// the repo root, while the frontend build lives at dist/. Resolve from this
-// file's own location so the server works regardless of where the `node`
-// process was launched from. Same parent in both dev and prod because tsx
-// runs from server/ and tsc emits to dist-server/ which is a sibling of dist/.
+// Resolve the repo root from this file's location. The path differs between
+// dev and prod because of how tsc emits relative to the rootDir setting:
+//   - dev:  tsx runs server/index.ts directly; __dirname is .../server,
+//     so `..` is the repo root.
+//   - prod: tsc emits to dist-server/server/index.js with rootDir set to
+//     the repo root (so src/ stays addressable); __dirname is
+//     .../dist-server/server, so we need TWO levels up to reach the repo
+//     root, which is where dist/ (the Vite output) lives.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const REPO_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = IS_PRODUCTION
+  ? path.resolve(__dirname, "..", "..")
+  : path.resolve(__dirname, "..");
 const FRONTEND_DIST = path.join(REPO_ROOT, "dist");
 
 // CORS in dev: allow Vite's dev server origin so the proxy works.
