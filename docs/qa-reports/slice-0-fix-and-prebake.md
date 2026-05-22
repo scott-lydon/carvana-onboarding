@@ -1,100 +1,67 @@
-# QA Adversary Report — Slice 0 fixes + slice 1 prebake (Self-Review Fallback)
+# QA Adversary Report — Slice 0 fixes + slice 1 prebake
 
-- **Date:** 2026-05-22
-- **Diff range:** `b914f2b..f274d4e` (4 commits)
-- **Reviewer:** Cowork-session self-review (NOT fresh-context qa-adversary)
-- **Why self-review:** The claude-code-bridge delegation timed out at the MCP transport for the second time on this slice and produced no sub-agent output before the timeout. Self-review is documented here so the gate can advance; fresh-context qa-adversary remains the required gate before slice 1.2 (VinAudit adapter integration) lands.
-- **Verdict:** **PASS for this scope** (slice 0 regression fixes + slice 1 prebake + documentation deliverables).
+- Date: 2026-05-22
+- Diff: b914f2b..f274d4e (4 commits: self-review report, qa FAIL report, slice-0 fixes + slice-1 prebake, architecture website)
+- Reviewer: Fresh-context qa-adversary (claude-opus-4-7) — replaces the prior self-review fallback that ran when the bridge timed out; the self-review itself flagged this fresh-context pass as the required gate.
+- Verdict: **PASS**
 
-## Prior-report regressions, status
+---
 
-| ID | Description | Status | Evidence |
-|---|---|---|---|
-| R1 | `tests/unit/scaffold.test.ts` was a passing test instead of the deliberately failing one per tasks.md §0.5 | **RESOLVED** | `grep 'expect(true).toBe(false)' tests/unit/scaffold.test.ts` returns line 15. `npm run test` now exits 1 with that test as the named failure. |
-| R2 | `npm run test:property` exited non-zero (empty directory) and was not wired into CI or test:all | **RESOLVED** | Script now uses `--passWithNoTests` (exits 0). `.github/workflows/ci.yml` adds a `Property-based tests` step. `package.json:test:all` invokes `npm run test:property`. `tests/property/.gitkeep` documents that VendorCascade property tests arrive in slice 1.4. |
-| R3 | `eslint.config.js` used `recommended` instead of `strict-type-checked` per constitution.md line 19 | **RESOLVED** | `grep strict-type-checked eslint.config.js` shows the rule spread; `projectService: true` is set so type-aware rules actually run; `tsconfigRootDir` is set. Type-aware errors caught and fixed across `src/`, `server/`, `playwright.config.ts`. |
-
-Additionally, the three nits from the prior report:
-
-| Nit | Description | Status |
-|---|---|---|
-| F4 | Dead-code IS_PRODUCTION ternary in `server/index.ts` | **RESOLVED** — branches simplified to single expression. |
-| F5 | Playwright smoke test checked H1 instead of document title | **RESOLVED** — `toHaveTitle(/Carvana Onboarding/)` added in `tests/e2e/smoke.spec.ts`. |
-| F6 | CORS wildcard in production | **RESOLVED** — `cors({ origin: corsOrigin })` with `corsOrigin = IS_PRODUCTION ? false : "http://localhost:5173"`. |
-
-## CAT categories tested against `QA_ADVERSARY.md`
+## Categories tested
 
 | Category | Active? | Result |
 |---|---|---|
-| CAT-1 | Yes | **PASS.** The only `catch` in `src/App.tsx` distinguishes `AbortError` from other errors and surfaces unreachable state to the UI. No catch-log-continue. |
-| CAT-2 | N/A | No form in this diff. EntryForm arrives in slice 1.6. |
-| CAT-3 | Yes | **PASS.** Grep over `src/` for "check your entry", "invalid plate", "invalid vin", "please try again" returns zero matches. Error copy in `src/lookup/types.ts` describes the SYSTEM constraint (ISO 3779 forbids I/O/Q) and suggests recovery, not blames the user. |
-| CAT-4 | N/A | No marketing UI in this diff. ConsentManager arrives in slice 6. |
-| CAT-5 | N/A | No account flow in this diff. PrequalEstimator arrives in slice 5. |
-| CAT-6 | N/A | No vendor calls in this diff. VendorAdapter interface is defined but no concrete adapter ships until slice 1.2. The interface does not expose plate-to-owner methods — the DPPA boundary is type-enforced at design time. |
-| CAT-7 | Yes | **PASS.** Grep over `src/`, `server/`, `tests/` finds zero references to `carvana.com`. Playwright baseURL is `http://localhost:5173`. |
-| CAT-8 | Yes | **PASS.** Grep over `src/`, `server/`, `tests/` finds zero `as any` or `@ts-ignore`. Strict-type-checked ESLint actively enforces this. |
-| CAT-9 | N/A | No vendor integration in this diff. |
-| CAT-10 | N/A | No EventReporter in this diff. Telemetry event-name discipline tests arrive with the EventReporter. |
+| CAT-1  | Yes | **PASS.** `src/App.tsx:27` catch block discriminates `AbortError` (benign teardown, commented) from real failure (`setServerStatus("unreachable")` — user-visible). No catch-log-continue. `VendorAdapter` JSDoc in `types.ts` mandates throw-on-infra, not-found-on-miss. |
+| CAT-2  | N/A | No form yet (slice 1.6). |
+| CAT-3  | Yes | **PASS.** Zero blame-the-user phrasing in `src/`, `server/`, or the new docs. `types.ts` errors are format-specific ("plates are ≤8 chars", "VINs are 17 chars per ISO 3779") not "invalid plate". |
+| CAT-4  | N/A | No consent UI yet (slice 6). |
+| CAT-5  | N/A | No account flow yet (slice 5). |
+| CAT-6  | Yes | **PASS.** `VendorAdapter` exposes only `lookupByPlate`/`lookupByVin`; `Vehicle` carries year/make/model/trim/bodyStyle only — no owner/registrant/driver fields. Website trust diagram (`index.html:509`) renders `plate → owner data: FORBIDDEN` as an explicit DPPA node. |
+| CAT-7  | Yes | **PASS.** Zero `carvana.com` references in code/tests. Playwright baseURL `localhost:5173`. |
+| CAT-8  | Yes | **PASS.** Zero `as any` / `@ts-ignore` / `@ts-expect-error`. Lint runs under `strict-type-checked` (77 rules) with zero warnings. (Note: `types.ts:37` `upper as StateCode` is a union downcast guarded by a same-value `Set.has` check — the canonical validated-parse idiom, not an unjustified escape.) |
+| CAT-9  | N/A | No integration tests yet (slice 1.2/1.5). |
+| CAT-10 | N/A | No EventReporter yet (slice 7). |
 
 ## Verification command outputs
 
 ```
-./scripts/check-placeholders.sh
-# PASS: constitution.md
-# PASS: spec.md
-# PASS: plan.md
-# PASS: tasks.md
-# PASS: QA_ADVERSARY.md
-# Exit: 0 ✓
-
-npm run typecheck        # Exit: 0 ✓
-npm run lint             # Exit: 0 ✓ (strict-type-checked active, 0 warnings)
-npm run test             # Exit: 1 ✓ (per spec §0.5; 15 pass + 1 deliberate fail)
-npm run test:property    # Exit: 0 ✓ (no test files, --passWithNoTests)
-npm run build            # Exit: 0 ✓ (143KB / 46KB gzipped)
-npm run build:server     # Exit: 0 ✓
+./scripts/check-placeholders.sh   # 5 PASS lines, exit 0 ✓
+npm run typecheck                 # exit 0 ✓
+npm run lint                      # exit 0, zero warnings ✓
+npm run test                      # exit 1 ✓ (scaffold.test.ts fails by design, §0.5; 15 pass)
+npm run test:property             # exit 0 ✓ (No test files found, --passWithNoTests)
+npm run test:e2e                  # exit 0 ✓ (1 passed)
 ```
 
-## Slice 1 prebake review
+## Diff-specific verification
 
-The `src/lookup/types.ts` file ships the following domain primitives ahead of slice 1.2:
+1. **scaffold.test.ts** — contains `expect(true).toBe(false)` (line 15); `npm run test` exits 1. ✓
+2. **test:property** — exits 0; invoked in CI (`ci.yml:37-38` "Property-based tests") and in `test:all` (`package.json:21`). ✓
+3. **eslint.config.js** — resolves `strict-type-checked` (verified: plugin exports it, 77 rules incl. `no-floating-promises`); `projectService: true` + `tsconfigRootDir` set. ✓
+4. **src/lookup/types.ts** — constructors throw named errors (`TypeError` on non-string; `Error` with field-specific guidance). `LookupResult` is an exhaustive `kind`-discriminated union (resolved/not_found/transient_error/bot_detected/format_error). `Vin` flags I/O/Q with positions + "try character-permutation recovery" hint (EC2). ✓
+5. **tests/unit/lookup-types.test.ts** — exercises Texas asterisk `★`/`*` (EC1), I/O/Q permutation hint (EC2), whitespace/dash/dot strip (EC4), lowercase (EC5). 14 tests, all pass. ✓
+6. **server/index.ts** — CORS restricted: `origin: IS_PRODUCTION ? false : "http://localhost:5173"` (no wildcard). Dead-code `IS_PRODUCTION` ternary on `REPO_ROOT` removed. ✓
+7. **website/index.html** — 3 Mermaid diagrams (topology `flowchart LR`, `sequenceDiagram`, trust `flowchart TB`); 16 `cdn.simpleicons.org` logo refs in node labels. ✓
 
-- `StateCode` is a literal-union of 50 + DC + PR codes with a `parseStateCode` parser at the input boundary.
-- `Plate` class normalizes input (strips non-alphanumeric, uppercases) and throws on empty or over-8-character results with named errors. Constructor preserves `raw`, `normalized`, and the array of `removedCharacters` so the trust-signal UI can show "we removed the asterisk" per Feature 9 of the redesign proposal.
-- `Vin` class enforces ISO 3779: exactly 17 characters after normalization, and throws on I/O/Q with an error message that explicitly mentions "character-permutation recovery before surfacing this error" — the literal hook EC2 needs.
-- `LookupResult` is a discriminated union over 5 cases (`resolved`, `not_found`, `transient_error`, `bot_detected`, `format_error`). The cascade's structured return is type-locked at the design level; the DegradationLayer pattern-matches at the consumer level.
-- `VendorAdapter` interface declares only `lookupByPlate` and `lookupByVin`. No `lookupByOwner` exists, so the DPPA boundary is type-impossible to violate via the adapter interface.
+## Regressions found
 
-The accompanying `tests/unit/lookup-types.test.ts` provides 14 tests covering:
-- Texas asterisk normalization (EC1) with `★`, `*`, spaces.
-- Whitespace, dash, dot stripping (EC4).
-- Lowercase input uppercasing (EC5).
-- Empty / over-length / non-alphanumeric inputs.
-- VIN length and I/O/Q forbidden, including the test that asserts the error message contains "character-permutation recovery" so the EC2 contract is locked in CI.
+None blocking. Minor notes (non-blocking, not regressions):
 
-## Architecture website review
+- `src/lookup/types.ts:135` — the I/O/Q error hardcodes "the user likely meant 1, 0, 0 respectively" regardless of which forbidden letters actually appear. The computed `positions` list is correct; only the trailing prose is generic. Cosmetic; the message is intended for DegradationLayer translation, not raw display.
+- `src/lookup/types.ts` constructor errors embed `JSON.stringify(rawInput)`. Per constitution ("never embed `getMessage()` in user-facing copy"), these must be caught and mapped to the `format_error` `LookupResult` member — never surfaced raw. The type design supports this; flagged so slice 1.6's EntryForm honors it.
 
-- `website/index.html` is single-file, self-contained, CDN-loaded (Tailwind, Mermaid 10, Chart.js 4).
-- `grep -c 'cdn.simpleicons.org' website/index.html` returns 14, confirming Simple Icons logos in stack-card and Mermaid node labels.
-- `mermaid.initialize` has `securityLevel: 'loose'` so the `<img>` tags in node labels render.
-- Three Mermaid diagrams: topology (flowchart LR), data flow (sequenceDiagram), trust boundaries (flowchart TB). Visual inspection: no edge crossings.
-- Two Chart.js charts: recovery vs cost (log scale), per-call vendor costs (log scale).
-- Decisions table mirrors `plan.md` exactly (10 rows).
-- Trade-off panels with "why we accept" + "when it would bite" structure per the Gauntlet website pattern.
+## Prior-report regressions — status
 
-## Tests added
+- **R1** (scaffold test weakened to `expect(1+1).toBe(2)`) — **RESOLVED.** `expect(true).toBe(false)` restored; `npm run test` exits 1.
+- **R2** (`test:property` exits 1, orphaned from CI/test:all) — **RESOLVED.** `--passWithNoTests` + `tests/property/.gitkeep`; exits 0; wired into `ci.yml` and `test:all`.
+- **R3** (ESLint `recommended` not `strict-type-checked`) — **RESOLVED.** Config resolves `strict-type-checked` (77 type-aware rules) with `projectService: true`.
 
-None. No regressions found; no adversary tests needed.
-
-## Recommended fix shapes
-
-N/A. No regressions.
+Prior nits also closed: Finding 4 (dead-code ternary removed), Finding 5 (smoke test now asserts `toHaveTitle`), Finding 6 (CORS locked to same-origin in prod).
 
 ## Notes for slice 1.2 (VinAudit adapter once credentials arrive)
 
-- **CAT-6 DPPA boundary** becomes the most important active category. The adapter MUST NOT include any field that maps to owner identity in either its request or its response handling.
-- **CAT-9 vendor mocking** becomes active. Integration tests against the adapter must hit the real VinAudit sandbox endpoint, gated by an env flag. Property tests against `VendorCascade` mock the `VendorAdapter` interface (legitimate: the cascade does not know about specific vendors), but the adapter's own integration tests do not.
-- **CAT-10 telemetry event names** becomes active when `EventReporter` lands. Event names should be defined in a `src/telemetry/events.ts` union type and emitted via a typed helper to prevent drift.
-- **fresh-context qa-adversary required** before slice 1.2 merge. Bridge has timed out twice on this project; if it times out a third time on a real-code slice, the user should run the sub-agent locally via `claude` CLI rather than via the bridge.
-- The deliberate `expect(true).toBe(false)` test in `tests/unit/scaffold.test.ts` should be removed in slice 1.0 — the first task of slice 1 is "delete the slice 0 placeholder failing test now that real unit tests exist."
+- `VendorAdapter` JSDoc contract is correct: adapters return `not_found` on a missing plate and **throw** on infra failures (timeout/5xx/malformed JSON). The slice-1.2 adapter must honor this split or the cascade's transient-vs-not-found discrimination breaks.
+- CAT-9 becomes active: the integration test must hit the real VinAudit sandbox gated by an env flag — no mocked vendor responses.
+- CAT-6 becomes active at request-shape level: audit the actual VinAudit request payload for any owner/registrant field.
+- The constitution and `plan.md` decisions table name **Carfax** as the primary vendor; `types.ts` JSDoc and tasks.md §1.2 now reference **VinAudit**. Reconcile this before wiring credentials so the architecture-pillar evidence stays internally consistent.
+- `test:property` is green-but-empty; slice 1.4 must add real `fast-check` tests under `tests/property/` (the `.gitkeep` note already says so).
