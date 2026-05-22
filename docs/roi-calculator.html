@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Carvana Sell-Flow Audit — ROI Calculator</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --panel: #1a2236;
+    --accent: #6366f1;
+    --accent-warm: #d4a373;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --border: #2d3748;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  h2 { font-size: 18px; margin-top: 32px; margin-bottom: 16px; color: var(--accent-warm); }
+  .lede { color: var(--muted); margin-bottom: 24px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 16px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .input-card label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .input-card .name { color: var(--accent); font-family: monospace; }
+  .input-card input[type="number"] {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 16px;
+    font-family: monospace;
+  }
+  .input-card input[type="range"] { width: 100%; margin-top: 4px; }
+  .input-card .help { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .result {
+    background: linear-gradient(135deg, #1e293b, #1a2236);
+    border-left: 4px solid var(--accent);
+    padding: 24px;
+    margin: 24px 0;
+    border-radius: 8px;
+  }
+  .result .label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .result .value {
+    font-size: 48px;
+    font-weight: 700;
+    color: var(--good);
+    margin: 8px 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .result .secondary { color: var(--muted); font-size: 14px; }
+  .scenarios {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .scenario {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .scenario .pct { font-size: 12px; color: var(--muted); }
+  .scenario .name { font-size: 14px; font-weight: 600; color: var(--accent-warm); margin: 4px 0 8px; }
+  .scenario .amt { font-size: 24px; font-weight: 700; color: var(--good); font-variant-numeric: tabular-nums; }
+  .formula {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--bg);
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .source-row {
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+    margin-top: 24px;
+  }
+  .source-row a { color: var(--accent); }
+  footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 32px; }
+  @media (max-width: 600px) {
+    .scenarios { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Carvana Sell-Flow Audit — ROI Calculator</h1>
+  <p class="lede">
+    Adjust the inputs to estimate annual revenue lost at the sell-flow entry step, and the recoverable portion from the audit's proposed fixes. Defaults are conservative numbers sourced from Carvana Q1 2026 10-K and Similarweb.
+  </p>
+
+  <div class="panel">
+    <h2>Inputs</h2>
+    <div class="grid">
+
+      <div class="input-card">
+        <label><span class="name">D</span> — daily sell-intent visitors</label>
+        <input type="number" id="D" value="7500" min="100" step="100">
+        <input type="range" id="D_r" min="100" max="50000" step="100" value="7500">
+        <p class="help">8% of 35M monthly visits × 30% sell-intent.</p>
+      </div>
+
+      <div class="input-card">
+        <label><span class="name">F</span> — entry-step failure rate (%)</label>
+        <input type="number" id="F" value="12" min="0" max="100" step="0.5">
+        <input type="range" id="F_r" min="0" max="50" step="0.5" value="12">
+        <p class="help">Includes bot block, vendor miss, transient errors, format issues.</p>
+      </div>
+
+      <div class="input-card">
+        <label><span class="name">A</span> — abandonment rate after failure (%)</label>
+        <input type="number" id="A" value="60" min="0" max="100" step="1">
+        <input type="range" id="A_r" min="0" max="100" step="1" value="60">
+        <p class="help">Industry funnel-step abandonment after 2 failed attempts.</p>
+      </div>
+
+      <div class="input-card">
+        <label><span class="name">R</span> — go-to-competitor rate (%)</label>
+        <input type="number" id="R" value="55" min="0" max="100" step="1">
+        <input type="range" id="R_r" min="0" max="100" step="1" value="55">
+        <p class="help">Free-quote alternatives (KBB, AutoTrader, CarMax) are 1 click away.</p>
+      </div>
+
+      <div class="input-card">
+        <label><span class="name">P</span> — gross profit per lost unit ($)</label>
+        <input type="number" id="P" value="1800" min="0" step="50">
+        <input type="range" id="P_r" min="0" max="10000" step="50" value="1800">
+        <p class="help">Sell-side contribution from Q1 2026 retail gross profit of $6,400/unit.</p>
+      </div>
+
+      <div class="input-card">
+        <label><span class="name">M</span> — wasted CAC per lost lead ($)</label>
+        <input type="number" id="M" value="630" min="0" step="10">
+        <input type="range" id="M_r" min="0" max="2000" step="10" value="630">
+        <p class="help">Q1 2026 advertising spend per retail unit sold.</p>
+      </div>
+
+    </div>
+
+    <div class="formula">
+      ANNUAL_LEAKAGE = D × 365 × (F/100) × (A/100) × (R/100) × (P + M)
+    </div>
+  </div>
+
+  <div class="result">
+    <div class="label">Total annual exposure (gross leakage)</div>
+    <div class="value" id="leakage">$0</div>
+    <div class="secondary" id="leakage_detail">at the inputs above</div>
+  </div>
+
+  <h2>Recovery scenarios — what the audit's fixes plausibly recover</h2>
+  <div class="scenarios">
+    <div class="scenario">
+      <div class="pct">18% recovery</div>
+      <div class="name">Conservative</div>
+      <div class="amt" id="r_low">$0</div>
+      <div class="pct">Honest error copy + normalization layer + character permutation</div>
+    </div>
+    <div class="scenario">
+      <div class="pct">24% recovery</div>
+      <div class="name">Base case</div>
+      <div class="amt" id="r_mid">$0</div>
+      <div class="pct">+ vendor cascade + OCR camera capture</div>
+    </div>
+    <div class="scenario">
+      <div class="pct">30% recovery</div>
+      <div class="name">Stretch</div>
+      <div class="amt" id="r_high">$0</div>
+      <div class="pct">+ DegradationLayer + LLM rescue + SMS resume</div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top: 24px;">
+    <h2 style="margin-top: 0;">Payback math</h2>
+    <p style="font-size: 14px;">
+      Implementation cost (3 engineers × 6 months, fully loaded) ≈ <strong>$600K</strong>.
+      At the conservative recovery number above, payback is <strong id="payback">—</strong>.
+    </p>
+  </div>
+
+  <div class="source-row">
+    Sources: Carvana Q1 2026 10-K (advertising-per-retail-unit, gross profit per unit); Similarweb (35M monthly visits); industry funnel-step abandonment benchmarks. Calculator parameters and methodology documented in
+    <a href="./SELL_FLOW_AUDIT.md">SELL_FLOW_AUDIT.md</a>
+    and
+    <a href="../research/carvana-business-case.md">research/carvana-business-case.md</a>.
+  </div>
+
+  <footer>
+    Carvana Onboarding Recovery Layer audit — 2026-05-22 — <a href="https://github.com/scott-lydon/carvana-onboarding" style="color: var(--accent);">repo</a>
+  </footer>
+</div>
+
+<script>
+// Link number inputs to range sliders.
+const fields = ['D', 'F', 'A', 'R', 'P', 'M'];
+fields.forEach(name => {
+  const n = document.getElementById(name);
+  const r = document.getElementById(name + '_r');
+  n.addEventListener('input', () => { r.value = n.value; recalc(); });
+  r.addEventListener('input', () => { n.value = r.value; recalc(); });
+});
+
+function fmt(n) {
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return '$' + Math.round(n/1e3) + 'K';
+  return '$' + Math.round(n).toLocaleString();
+}
+
+function recalc() {
+  const D = +document.getElementById('D').value || 0;
+  const F = (+document.getElementById('F').value || 0) / 100;
+  const A = (+document.getElementById('A').value || 0) / 100;
+  const R = (+document.getElementById('R').value || 0) / 100;
+  const P = +document.getElementById('P').value || 0;
+  const M = +document.getElementById('M').value || 0;
+
+  const annualLeakage = D * 365 * F * A * R * (P + M);
+  document.getElementById('leakage').textContent = fmt(annualLeakage);
+
+  const dailyFailures = Math.round(D * F);
+  const dailyAbandons = Math.round(D * F * A);
+  const dailyToCompetitor = Math.round(D * F * A * R);
+  document.getElementById('leakage_detail').textContent =
+    `${dailyFailures.toLocaleString()} failures/day → ${dailyAbandons.toLocaleString()} abandon → ${dailyToCompetitor.toLocaleString()} go to a competitor`;
+
+  const r18 = annualLeakage * 0.18;
+  const r24 = annualLeakage * 0.24;
+  const r30 = annualLeakage * 0.30;
+  document.getElementById('r_low').textContent = fmt(r18);
+  document.getElementById('r_mid').textContent = fmt(r24);
+  document.getElementById('r_high').textContent = fmt(r30);
+
+  // payback in weeks given $600K eng cost and conservative recovery rate
+  if (r18 > 0) {
+    const weeks = (600000 / r18) * 52;
+    const paybackText = weeks < 1
+      ? '< 1 week'
+      : weeks < 4
+        ? `${weeks.toFixed(1)} weeks`
+        : `${(weeks / 4.345).toFixed(1)} months`;
+    document.getElementById('payback').textContent = paybackText;
+  } else {
+    document.getElementById('payback').textContent = '—';
+  }
+}
+
+recalc();
+</script>
+</body>
+</html>
