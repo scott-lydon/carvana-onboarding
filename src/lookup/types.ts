@@ -129,11 +129,21 @@ export class Vin {
       const positions = Array.from(this.normalized).flatMap((ch, i) =>
         forbidden.test(ch) ? [`${ch}@${String(i)}`] : [],
       );
+      // Map the actually-present forbidden letters to their numeric look-alikes
+      // so the recovery hint matches the input, not a hardcoded list. I→1,
+      // O→0, Q→0 (Q rarely substitutes cleanly; 0 is the conservative pick).
+      const presentForbidden = Array.from(
+        new Set(Array.from(this.normalized).filter((ch) => forbidden.test(ch))),
+      );
+      const subs: Record<string, string> = { I: "1", O: "0", Q: "0" };
+      const suggestion = presentForbidden
+        .map((ch) => `${ch}→${subs[ch] ?? "?"}`)
+        .join(", ");
       throw new Error(
         `VIN contains forbidden characters per ISO 3779 ` +
           `(I, O, Q are not allowed): ${positions.join(", ")} in ` +
-          `${this.normalized}. The user likely meant 1, 0, 0 respectively; ` +
-          `try character-permutation recovery before surfacing this error.`,
+          `${this.normalized}. Likely substitutions: ${suggestion}. ` +
+          `Try character-permutation recovery before surfacing this error.`,
       );
     }
   }
