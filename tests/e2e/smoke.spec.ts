@@ -1,22 +1,24 @@
 import { expect, test } from "@playwright/test";
 
-// Slice 0 end-to-end smoke. The dev server boots, the React app mounts, the
-// client fetches /api/health, and the status indicator transitions from
-// "checking" to "ok". Slice 3+ adds the failure-mode scenarios (CAT-2 tab
-// reset, CAT-3 blame-the-user copy, CAT-5 account-before-value gate).
-test("scaffold loads and reports the server is reachable", async ({ page }) => {
+/**
+ * Smoke test: dev server boots, EntryForm mounts.
+ *
+ * Slice 0 originally asserted the server-status indicator (now removed —
+ * App.tsx renders EntryForm directly per slice 1.6). The smoke check is
+ * now "the entry UI is on screen and the tabs work." The bot-detection /
+ * not-found / format-error scenarios live in their own spec files.
+ */
+test("entry form mounts with plate + VIN tabs", async ({ page }) => {
   await page.goto("/");
-  // Document title check per tasks.md §0.6 done-criteria.
   await expect(page).toHaveTitle(/Carvana Onboarding/);
-  // Plus the visible heading, because the user needs to see the page header.
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    "Carvana Onboarding Recovery Layer",
+  await expect(page.getByRole("heading", { level: 1 })).toContainText(
+    "Sell your car",
   );
-  const status = page.getByTestId("server-status");
-  await expect(status).toContainText("Status:");
-  // The status should resolve to "ok" given the Express server is up via the
-  // playwright.config.ts webServer block. If we get "unreachable" something is
-  // wrong with the proxy or the server, which is exactly what this test should
-  // catch on regression.
-  await expect(status).toContainText("ok", { timeout: 10_000 });
+  // Both tabs are visible by their accessible names.
+  await expect(
+    page.getByRole("tab", { name: "License Plate" }),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: "VIN" })).toBeVisible();
+  // Plate tab is the default — its input is in the DOM, VIN input is not.
+  await expect(page.getByPlaceholder(/XRJ/i)).toBeVisible();
 });
