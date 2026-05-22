@@ -21,7 +21,7 @@ services:
     branch: main
     autoDeploy: false
     buildCommand: npm ci && npm run build && npm run build:server
-    startCommand: node dist-server/index.js
+    startCommand: node dist-server/server/index.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

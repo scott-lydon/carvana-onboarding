@@ -16,6 +16,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express, { type Request, type Response } from "express";
 import cors from "cors";
+import { createCascade } from "../src/lookup/createCascade.js";
+import {
+  makePlateLookupHandler,
+  makeVinLookupHandler,
+} from "./routes/lookup.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -50,22 +55,22 @@ app.get("/api/health", (_req: Request, res: Response): void => {
   });
 });
 
-// Slice 1 wires this up against the VendorCascade.
-app.post("/api/lookup/plate", (_req: Request, res: Response): void => {
-  res.status(501).json({
-    error: "NOT_IMPLEMENTED",
-    slice: "wires up in slice 1",
-    message: "Plate lookup is not yet implemented in this build.",
-  });
+// Slice 1.2: VendorCascade wired here. If VINAUDIT_API_KEY is not set, the
+// cascade is undefined and the route handlers return 503 configuration_missing.
+const cascade = createCascade({
+  VINAUDIT_API_KEY: process.env.VINAUDIT_API_KEY,
+  VINAUDIT_BASE_URL: process.env.VINAUDIT_BASE_URL,
 });
-
-// Slice 1 also wires this up.
-app.post("/api/lookup/vin", (_req: Request, res: Response): void => {
-  res.status(501).json({
-    error: "NOT_IMPLEMENTED",
-    slice: "wires up in slice 1",
-    message: "VIN lookup is not yet implemented in this build.",
-  });
+// Wrap async handlers so Express's void-return contract is satisfied
+// (no-misused-promises rule). Errors inside the async handler are already
+// caught by the route logic and mapped to structured 5xx bodies.
+const plateHandler = makePlateLookupHandler(cascade);
+const vinHandler = makeVinLookupHandler(cascade);
+app.post("/api/lookup/plate", (req: Request, res: Response): void => {
+  void plateHandler(req, res);
+});
+app.post("/api/lookup/vin", (req: Request, res: Response): void => {
+  void vinHandler(req, res);
 });
 
 // Slice 4 wires this up against Google Cloud Vision.
