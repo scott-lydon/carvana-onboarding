@@ -82,16 +82,23 @@ export function makePlateLookupHandler(cascade: VendorCascade | undefined) {
       result = await cascade.lookupByPlate(plate, state);
     } catch (err) {
       // Cascade is documented to NEVER throw. If it does, that's a bug we
-      // want to surface, not silently swallow. We still return a structured
-      // 500 to the client.
+      // want to surface in our server logs, not forward into the client
+      // response body. Per constitution CAT-3 ("Never expose getMessage()
+      // in user-facing output"), the response body carries only a fixed
+      // generic detail string; the actual exception goes to stderr where
+      // the operator can read it without exposing internals to the client.
+      // See docs/qa-reports/slice-1.6.md R1.
+      console.error(
+        "[lookup/plate] unexpected cascade throw — investigate immediately:",
+        err,
+      );
       res.status(500).json({
         kind: "transient_error",
         retryable: true,
         cause: "unexpected_cascade_throw",
         detail:
-          err instanceof Error
-            ? err.message
-            : "unknown cascade error",
+          "An unexpected internal error occurred. The operator has been " +
+          "notified; please retry shortly.",
       });
       return;
     }
@@ -161,11 +168,19 @@ export function makeVinLookupHandler(cascade: VendorCascade | undefined) {
     try {
       result = await cascade.lookupByVin(vin);
     } catch (err) {
+      // Same constitution rule as the plate handler above. See
+      // docs/qa-reports/slice-1.6.md R1.
+      console.error(
+        "[lookup/vin] unexpected cascade throw — investigate immediately:",
+        err,
+      );
       res.status(500).json({
         kind: "transient_error",
         retryable: true,
         cause: "unexpected_cascade_throw",
-        detail: err instanceof Error ? err.message : "unknown cascade error",
+        detail:
+          "An unexpected internal error occurred. The operator has been " +
+          "notified; please retry shortly.",
       });
       return;
     }

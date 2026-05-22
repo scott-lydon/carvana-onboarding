@@ -123,7 +123,13 @@ export function EntryForm(): JSX.Element {
           aria-selected={tab === "plate"}
           className={`tab ${tab === "plate" ? "tab-active" : ""}`}
           onClick={() => {
+            // Switching tabs resets the result panel so the old tab's
+            // error/result does not visually contaminate the new tab.
+            // Field state (plate, state, vin) is intentionally PRESERVED
+            // per CAT-2 — only the transient DegradationPanel state clears.
+            // See docs/qa-reports/slice-1.6.md F3.
             setTab("plate");
+            setUi({ phase: "idle" });
           }}
         >
           License Plate
@@ -135,6 +141,7 @@ export function EntryForm(): JSX.Element {
           className={`tab ${tab === "vin" ? "tab-active" : ""}`}
           onClick={() => {
             setTab("vin");
+            setUi({ phase: "idle" });
           }}
         >
           VIN
@@ -393,6 +400,18 @@ function DegradationPanel(props: {
           <h2>The demo is still warming up</h2>
           <p>{body.message}</p>
         </section>
+      );
+    }
+    // Exhaustiveness arm — see docs/qa-reports/slice-1.6.md F1. When a new
+    // ApiResponseBody variant is added, this `never` assignment fails to
+    // compile with a clear "Type X is not assignable to type never" error
+    // pointing at the missing case, instead of the generic "function lacks
+    // ending return statement" you'd otherwise see somewhere upstream.
+    default: {
+      const _exhaustive: never = body;
+      throw new Error(
+        `DegradationPanel: unhandled ApiResponseBody.kind — ` +
+          `value=${JSON.stringify(_exhaustive)}`,
       );
     }
   }

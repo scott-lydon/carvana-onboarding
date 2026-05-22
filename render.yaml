@@ -35,3 +35,14 @@ services:
       # tree regardless of NODE_ENV. This is the Render-documented fix.
       - key: NPM_CONFIG_PRODUCTION
         value: "false"
+      # Vendor API keys — declared so a blueprint redeploy from a fresh
+      # Render account documents the required dashboard secrets. `sync: false`
+      # means Render does NOT auto-populate the value from the blueprint;
+      # the operator must set it manually in the dashboard. Without this
+      # declaration a fresh redeploy would silently start a service that
+      # returns 503 configuration_missing for every request. See
+      # docs/qa-reports/slice-1.6.md F2.
+      - key: CARSXE_API_KEY
+        sync: false
+      - key: VINAUDIT_API_KEY
+        sync: false
