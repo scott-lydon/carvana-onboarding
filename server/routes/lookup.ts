@@ -28,7 +28,8 @@ export function makePlateLookupHandler(cascade: VendorCascade | undefined) {
         kind: "configuration_missing",
         message:
           "Vendor credentials are not configured for this deployment. " +
-          "Set VINAUDIT_API_KEY in the Render dashboard and redeploy.",
+          "Set CARSXE_API_KEY (primary) or VINAUDIT_API_KEY (fallback) " +
+          "in the Render dashboard and redeploy.",
       });
       return;
     }
@@ -123,7 +124,8 @@ export function makeVinLookupHandler(cascade: VendorCascade | undefined) {
         kind: "configuration_missing",
         message:
           "Vendor credentials are not configured for this deployment. " +
-          "Set VINAUDIT_API_KEY in the Render dashboard and redeploy.",
+          "Set CARSXE_API_KEY (primary) or VINAUDIT_API_KEY (fallback) " +
+          "in the Render dashboard and redeploy.",
       });
       return;
     }
