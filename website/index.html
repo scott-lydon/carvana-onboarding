@@ -1,10 +1,9 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Carvana Onboarding Recovery Layer — Architecture</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="A graceful-degradation, OCR-augmented recovery layer for Carvana's sell-flow entry step. Conservative annual recovery: $47M.">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Carvana Onboarding Recovery Layer — v2 Architecture</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
@@ -12,671 +11,266 @@
   :root {
     --bg: #0a0e1a;
     --panel: #1a2236;
-    --panel-2: #1e293b;
     --accent: #6366f1;
-    --accent-warm: #d4a373;
-    --good: #34d399;
-    --warn: #fbbf24;
-    --bad: #f87171;
+    --accent-2: #10b981;
     --text: #e2e8f0;
     --muted: #94a3b8;
-    --border: #2d3748;
+    --border: #2a3450;
+    --pro: #10b981;
+    --con: #f59e0b;
+    --bad: #ef4444;
   }
-  html, body { background: var(--bg); color: var(--text); }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
-  .panel-2 { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
-  .accent { color: var(--accent); }
-  .accent-warm { color: var(--accent-warm); }
-  .good { color: var(--good); }
-  .warn { color: var(--warn); }
-  .bad { color: var(--bad); }
-  .muted { color: var(--muted); }
-  a { color: var(--accent); }
-  a:hover { text-decoration: underline; }
-  pre, code { font-family: ui-monospace, "SF Mono", monospace; }
-  nav.sticky-nav {
-    position: sticky; top: 0; z-index: 50;
-    background: rgba(10, 14, 26, 0.85);
-    backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border);
-  }
-  nav.sticky-nav a {
-    color: var(--muted);
-    padding: 6px 12px;
-    border-radius: 6px;
-    transition: background 0.15s, color 0.15s;
-  }
-  nav.sticky-nav a:hover { color: var(--text); background: var(--panel); text-decoration: none; }
-  .mermaid { background: var(--panel); border-radius: 12px; padding: 24px; }
-  .stack-card img, .stack-card svg { width: 28px; height: 28px; }
-  table.decisions { width: 100%; border-collapse: collapse; }
-  table.decisions th, table.decisions td {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    text-align: left;
-    vertical-align: top;
-    font-size: 14px;
-  }
-  table.decisions th { color: var(--accent-warm); font-weight: 600; }
-  .stat-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
-  .stat-value { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .stat-label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
-  .pillar { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .pillar h4 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .pillar ul { font-size: 13px; line-height: 1.6; color: var(--text); padding-left: 18px; }
-  @media (max-width: 700px) { .pillar { grid-template-columns: 1fr; } }
+  html, body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px; }
+  .anchor-target { scroll-margin-top: 80px; }
+  .nav-link { color: var(--muted); transition: color 0.2s; }
+  .nav-link:hover { color: var(--text); }
+  .decision-table th, .decision-table td { padding: 10px 12px; border: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 14px; }
+  .decision-table th { background: #111827; color: var(--accent); }
+  .decision-table { width: 100%; border-collapse: collapse; }
+  .pro-con-pro { color: var(--pro); }
+  .pro-con-con { color: var(--con); }
+  .stack-card { display: flex; flex-direction: column; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 12px; color: var(--muted); }
+  .stack-card img { width: 32px; height: 32px; }
+  .badge { background: var(--accent); color: white; padding: 2px 8px; border-radius: 999px; font-size: 11px; margin-left: 6px; vertical-align: middle; }
 </style>
 </head>
 <body>
-
-<nav class="sticky-nav">
+<nav class="sticky top-0 z-50 backdrop-blur" style="background: rgba(10, 14, 26, 0.85); border-bottom: 1px solid var(--border);">
   <div class="max-w-6xl mx-auto px-6 py-3 flex flex-wrap items-center gap-4 text-sm">
-    <a href="#top" class="font-semibold" style="color: var(--text);">Carvana Onboarding Recovery Layer</a>
-    <span class="ml-auto"></span>
-    <a href="#problem">Problem</a>
-    <a href="#topology">Topology</a>
-    <a href="#components">Components</a>
-    <a href="#flow">Flow</a>
-    <a href="#decisions">Decisions</a>
-    <a href="#tradeoffs">Trade-offs</a>
-    <a href="#cost">Cost</a>
-    <a href="#trust">Trust</a>
-    <a href="#stack">Stack</a>
+    <span class="font-bold text-white">Carvana Onboarding Recovery Layer</span>
+    <a href="#hero" class="nav-link">Overview</a>
+    <a href="#problem" class="nav-link">Problem</a>
+    <a href="#topology" class="nav-link">Topology</a>
+    <a href="#components" class="nav-link">Components</a>
+    <a href="#flow" class="nav-link">Data flow</a>
+    <a href="#decisions" class="nav-link">Decisions</a>
+    <a href="#tradeoffs" class="nav-link">Trade-offs</a>
+    <a href="#cost" class="nav-link">Cost</a>
+    <a href="#trust" class="nav-link">Trust boundaries</a>
+    <a href="#stack" class="nav-link">Stack</a>
   </div>
 </nav>
 
-<section id="top" class="max-w-6xl mx-auto px-6 pt-16 pb-12">
-  <h1 class="text-4xl font-bold mb-3">Carvana Onboarding Recovery Layer</h1>
-  <p class="muted text-lg max-w-3xl">
-    A graceful-degradation, OCR-augmented layer that sits between Carvana's
-    sell-flow entry form and their existing vendors. It separates the six
-    distinct failure modes Carvana currently collapses into one hostile error
-    message, and routes each to its correct next-action prompt.
-  </p>
-
+<section id="hero" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h1 class="text-5xl font-bold mb-2">Carvana Onboarding Recovery Layer</h1>
+  <p class="text-xl" style="color: var(--muted);">A conversational, OCR-augmented, atomically-scheduled onboarding concierge for sell-side trade-in. v2 architecture.</p>
   <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
-    <div class="stat-card">
-      <div class="stat-label">Annual recovery</div>
-      <div class="stat-value good">$47M</div>
-      <div class="muted text-xs mt-1">Conservative, sourced from Q1 2026 10-K</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Payback</div>
-      <div class="stat-value">&lt;2 weeks</div>
-      <div class="muted text-xs mt-1">vs. $600K loaded eng cost</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Failure modes today</div>
-      <div class="stat-value bad">6 collapsed → 1 message</div>
-      <div class="muted text-xs mt-1">Bot, vendor, network, format, typo, foreign plate</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Test corpus</div>
-      <div class="stat-value">5 plates / 5 fails</div>
-      <div class="muted text-xs mt-1">Texas asterisk edge case, 5-for-5</div>
-    </div>
+    <div class="panel text-center"><div class="text-3xl font-bold" style="color: var(--accent);">4 / 4</div><div class="text-sm mt-1" style="color: var(--muted);">v2 PRD functional requirements shipped</div></div>
+    <div class="panel text-center"><div class="text-3xl font-bold" style="color: var(--accent-2);">137 ms</div><div class="text-sm mt-1" style="color: var(--muted);">p95 server latency (vs 3 000 ms SLA)</div></div>
+    <div class="panel text-center"><div class="text-3xl font-bold" style="color: var(--accent-2);">67 / 67</div><div class="text-sm mt-1" style="color: var(--muted);">tests passing (incl. 10-parallel concurrency)</div></div>
+    <div class="panel text-center"><div class="text-3xl font-bold" style="color: var(--accent-2);">2 days</div><div class="text-sm mt-1" style="color: var(--muted);">to ship the v2 rebuild (7 slices A through G)</div></div>
   </div>
 </section>
 
-<section id="problem" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">The problem we are fixing</h2>
-  <div class="grid md:grid-cols-2 gap-4">
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold bad mb-3">Carvana today</h3>
-      <ul class="text-sm space-y-2 muted list-disc pl-5">
-        <li>Six failure causes (bot detection, vendor coverage miss, transient backend error, format edge case, character ambiguity, foreign plate) all render the same string: "we couldn't find that license plate."</li>
-        <li>User cannot tell which mode hit them, cannot fix it, leaves for a competitor.</li>
-        <li>VIN tab submission silently resets to license plate on failure with no error message, contradicting the "VIN OR plate" promise.</li>
-        <li>Texas plates with the asterisk separator fail 100% (5 for 5 in our corpus).</li>
-        <li>Bot detection misfires on legitimate automation users (developers, accessibility users, VPN users) with the same blame-the-user copy.</li>
-        <li>No OCR fallback. No character-permutation recovery. No format normalization.</li>
+<section id="problem" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">The problem we recover from</h2>
+  <div class="grid md:grid-cols-2 gap-6">
+    <div class="panel">
+      <h3 class="text-lg font-bold mb-3" style="color: var(--bad);">Carvana today</h3>
+      <ul class="space-y-2 text-sm" style="color: var(--muted);">
+        <li>Plate-lookup wall blames the user when the vendor data misses (S4).</li>
+        <li>VIN submission silently resets the form on backend error (S6).</li>
+        <li>Buy-side prequal traps users behind an account-creation gate after 5 minutes of PII entry (B8).</li>
+        <li>Pre-checked SMS opt-in (TCPA risk, B5).</li>
       </ul>
     </div>
-    <div class="panel p-6" style="border-color: var(--accent);">
-      <h3 class="text-lg font-semibold good mb-3">Our recovery layer</h3>
-      <ul class="text-sm space-y-2 list-disc pl-5">
-        <li>Cascade lookup: primary vendor → fallback vendor → OCR camera capture.</li>
-        <li>Format normalization strips Texas asterisks, whitespace, dashes, dots; uppercases; trims.</li>
-        <li>Character-permutation recovery suggests I↔1, O↔0, B↔8, S↔5, Z↔2 on lookup misses.</li>
-        <li>Discriminated-union return shape: <code>resolved</code>, <code>not_found</code>, <code>transient_error</code>, <code>bot_detected</code>, <code>format_error</code>. Each renders its own copy and next-action.</li>
-        <li>Form and tab state preserved across every error. No silent resets.</li>
-        <li>SMS resume link surfaces at every dead-end. Proactive chat after 3 failures.</li>
-        <li>Telemetry per failure mode so the recovery rate can be measured for the first time.</li>
+    <div class="panel">
+      <h3 class="text-lg font-bold mb-3" style="color: var(--accent-2);">Recovery layer</h3>
+      <ul class="space-y-2 text-sm" style="color: var(--muted);">
+        <li>Chatbot drives plate entry conversationally; tool-use cascades over real vendor APIs.</li>
+        <li>OCR rescues VIN capture when the user can't or won't type 17 characters.</li>
+        <li>Atomic scheduler books pickup with no double-booking under concurrent load.</li>
+        <li>Pre-baked support content surfaces at known anxiety moments; the LLM picks WHICH card, never writes the words.</li>
       </ul>
     </div>
   </div>
 </section>
 
-<section id="topology" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Topology</h2>
-  <p class="muted mb-4 max-w-3xl text-sm">
-    Drop-in gateway pattern. Carvana's existing frontend posts to our gateway
-    instead of their direct vendor call; everything downstream is plug-compatible
-    with their current stack. The gateway owns the cascade, the timeouts, and
-    the failure-mode discrimination.
-  </p>
-  <div class="mermaid">
-flowchart LR
-  classDef client fill:#1e293b,stroke:#6366f1,color:#e2e8f0
-  classDef gateway fill:#1a2236,stroke:#d4a373,color:#e2e8f0
-  classDef vendor fill:#1e293b,stroke:#34d399,color:#e2e8f0
-  classDef fail fill:#1e293b,stroke:#f87171,color:#e2e8f0
+<section id="topology" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Topology</h2>
+  <div class="panel"><pre class="mermaid">
+flowchart TD
+    User["<img src='https://cdn.simpleicons.org/safari/000000' width='18'/> User browser"]
+    Shell["<img src='https://cdn.simpleicons.org/react/61dafb' width='18'/> ChatbotShell (React)"]
+    Ocr["<img src='https://cdn.simpleicons.org/react/61dafb' width='18'/> OcrCapture"]
+    Sched["<img src='https://cdn.simpleicons.org/react/61dafb' width='18'/> Scheduler"]
+    Nps["<img src='https://cdn.simpleicons.org/react/61dafb' width='18'/> NpsSurvey"]
+    subgraph server["Express on Node 22"]
+      ChatRoute["<img src='https://cdn.simpleicons.org/express/e8e0cc' width='18'/> /api/chat (SSE)"]
+      OcrRoute["<img src='https://cdn.simpleicons.org/express/e8e0cc' width='18'/> /api/ocr/recognize"]
+      SchedRoutes["<img src='https://cdn.simpleicons.org/express/e8e0cc' width='18'/> /api/schedule/{slots,book}"]
+      NpsRoutes["<img src='https://cdn.simpleicons.org/express/e8e0cc' width='18'/> /api/nps/{submit,summary}"]
+      Lookup["<img src='https://cdn.simpleicons.org/express/e8e0cc' width='18'/> /api/lookup/{plate,vin}"]
+      VC["VendorCascade<br/>8s timeout"]
+      SQ["<img src='https://cdn.simpleicons.org/sqlite/003b57' width='18'/> SQLite<br/>BEGIN IMMEDIATE"]
+    end
+    Anth["<img src='https://cdn.simpleicons.org/anthropic/d4a373' width='18'/> Anthropic Messages<br/>Claude Sonnet 4.5"]
+    Carsxe["CarsXE platedecoder"]
+    User --> Shell
+    Shell --> ChatRoute
+    Ocr --> OcrRoute
+    Sched --> SchedRoutes
+    Nps --> NpsRoutes
+    ChatRoute -.tool_use.-> Anth
+    Anth -.lookup_plate.-> ChatRoute
+    ChatRoute --> Lookup
+    Lookup --> VC
+    VC --> Carsxe
+    OcrRoute --> Anth
+    SchedRoutes --> SQ
+    NpsRoutes --> SQ
+  </pre></div>
+</section>
 
-  subgraph BROWSER ["<img src='https://cdn.simpleicons.org/react/61dafb' width='18'/> Browser"]
-    direction TB
-    Form["EntryForm<br/>(plate / VIN tabs)"]
-    Norm["NormalizationLayer<br/>(strip ★ ws -)"]
-    Cam["OCRCapture<br/>(getUserMedia)"]
-    Deg["DegradationLayer<br/>(error → copy + next-action)"]
-  end
-  class Form,Norm,Cam,Deg client
-
-  subgraph GATEWAY ["<img src='https://cdn.simpleicons.org/express/ffffff' width='18'/> Gateway (Express)"]
-    direction TB
-    Routes["/api/lookup/{plate,vin}<br/>/api/ocr/recognize"]
-    Cascade["VendorCascade<br/>(timeouts, fallbacks)"]
-    Events["EventReporter<br/>(per-mode telemetry)"]
-  end
-  class Routes,Cascade,Events gateway
-
-  Primary["<img src='https://cdn.simpleicons.org/carfax/0066b3' width='18'/> Carfax QuickVIN+"]:::vendor
-  Fallback["DataOne Software"]:::vendor
-  Vision["<img src='https://cdn.simpleicons.org/googlecloud/4285f4' width='18'/> Cloud Vision"]:::vendor
-
-  Form --> Norm --> Routes
-  Cam --> Routes
-  Routes --> Cascade
-  Cascade -->|primary| Primary
-  Cascade -.->|on miss/timeout| Fallback
-  Cascade -.->|on all miss| Cam
-  Routes --> Events
-  Routes -->|structured result| Deg
-  Cam -->|cropped image| Vision
-  Vision --> Routes
+<section id="components" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Components</h2>
+  <div class="grid md:grid-cols-2 gap-6">
+    <div class="panel"><h3 class="text-lg font-bold mb-3">ChatbotShell <span class="badge">slice A</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>Tool-use orchestration is the only place LLM touches user data.</li><li>Streamed SSE first-token under 1.5 s.</li><li>history_sync preserves multi-turn context.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>Adds a vendor (Anthropic) to the critical path.</li><li>Pre-baked greeting needed to mask first-paint latency.</li></ul></div></div></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-3">OcrCapture <span class="badge">slice B</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>Same Anthropic key as chat — one vendor, one secret.</li><li>Camera + file-upload fallback; no Tesseract bundle.</li><li>Recognized VIN flows back as a user message; chatbot routes natively.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>Cost per call &gt; Tesseract (offset by accuracy).</li><li>Requires camera permission UX.</li></ul></div></div></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-3">Scheduler <span class="badge">slice C</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>BEGIN IMMEDIATE + UNIQUE constraint = atomic at the storage layer.</li><li>10 parallel bookings &rarr; exactly 1 success (regression test enforced).</li><li>In-house grid ships in 1 day vs Cal.com integration.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>Ephemeral on Render free tier (acceptable for demo).</li><li>No timezone-aware display per user.</li></ul></div></div></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-3">SupportContentWidget <span class="badge">slice D</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>Hallucinated reassurance is eliminated at the architecture level.</li><li>Card bodies are auditable, A/B-testable, citable.</li><li>Byte-for-byte regression test (CAT-12) blocks drift.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>Adding a topic is a code change, not a config change.</li><li>LLM may misclassify the right topic.</li></ul></div></div></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-3">NpsSurvey + MetricsOverlay <span class="badge">slice E</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>NPS = ((promoters − detractors) / n) × 100, Bain standard.</li><li>Summary always carries n + source labeling (CAT-15).</li><li>Stopwatch from first user message proves the 15-min metric.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>Demo sample size is small; cited industry NPS used as anchor.</li></ul></div></div></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-3">VendorCascade <span class="badge">slice 1</span></h3><div class="grid grid-cols-2 gap-3 text-sm"><div><div class="font-semibold pro-con-pro">Pros</div><ul style="color: var(--muted);"><li>CarsXE primary, VinAudit fallback (pending B2B approval).</li><li>8 s per-adapter timeout; short-circuits on resolved or bot_detected.</li><li>Property tests (200 runs) over every vendor permutation.</li></ul></div><div><div class="font-semibold pro-con-con">Cons</div><ul style="color: var(--muted);"><li>CarsXE sandbox is 100 calls lifetime; production swap to Carfax is a one-line adapter change.</li></ul></div></div></div>
   </div>
 </section>
 
-<section id="components" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Components</h2>
-  <div class="grid md:grid-cols-2 gap-4">
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">VendorCascade</h3>
-      <p class="text-sm muted mb-3">Pure domain module. Tries primary vendor with a 2s timeout, falls through to fallback on miss/error, returns a discriminated-union result.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>Vendor-agnostic; swap adapters in one file.</li>
-            <li>Bounded worst-case latency (sum of timeouts).</li>
-            <li>Structured return = no shared error string.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>Two-vendor minimum doubles integration surface.</li>
-            <li>Mocked tests forbidden by constitution (real sandboxes only).</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">DegradationLayer</h3>
-      <p class="text-sm muted mb-3">React context wrapping the entry form. Pattern-matches the cascade's return shape to user-facing copy + next-action prompt. The load-bearing component.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>One named copy path per failure cause.</li>
-            <li>Tab and field state preserved on error.</li>
-            <li>Honest "we couldn't reach our data" copy, not blame-the-user.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>More copy to maintain than a single generic message.</li>
-            <li>Bot-detection differentiated copy is a Trust &amp; Safety decision Carvana has to greenlight.</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">OCRCapture</h3>
-      <p class="text-sm muted mb-3">Browser <code>getUserMedia</code> for camera capture; ships a cropped image to <code>/api/ocr/recognize</code> which calls Google Cloud Vision. iOS variant uses Apple Vision on-device for the privacy story.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>Recovers users where data coverage genuinely misses.</li>
-            <li>iOS on-device = no PII over the wire.</li>
-            <li>~$1.50 per 1k web-side OCR calls. Trivial at scale.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>Camera permission is its own UX speed bump.</li>
-            <li>Multi-color plates (Hawaii rainbow, fade specialty plates) need confidence-threshold confirmation.</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">NormalizationLayer</h3>
-      <p class="text-sm muted mb-3">First line of defense against the Texas asterisk bug. Strips non-alphanumeric characters, uppercases, trims whitespace, shows the user what was stripped as a trust signal.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>Fixes EC1 (Texas asterisk) for an entire state.</li>
-            <li>Fixes EC4 (whitespace, dashes, dots) silently.</li>
-            <li>One-day eng change.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>Aggressive stripping could mask legitimate special characters on diplomatic / antique plates. Mitigation: per-state allowlists in slice 2.</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">EventReporter</h3>
-      <p class="text-sm muted mb-3">Each named failure mode is a stable event name. Logs to a local SQLite for the demo; would wire to Carvana's existing telemetry in production.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>First time Carvana can measure per-mode failure rates.</li>
-            <li>Recovery dollar estimate moves from inference to observation.</li>
-            <li>Adversary-replayable test fixtures.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>Event-name drift is a real risk (CAT-10 in <code>QA_ADVERSARY.md</code>); enforced via TS union.</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="text-lg font-semibold accent-warm mb-3">ConsentManager</h3>
-      <p class="text-sm muted mb-3">Buy-side TCPA-compliant consent UI. SMS opt-in defaults OFF; User Agreement, Privacy Policy, E-SIGN consent surface as separate checkboxes, not click-wrap.</p>
-      <div class="pillar">
-        <div>
-          <h4 class="good">Pros</h4>
-          <ul>
-            <li>Literal opposite of Carvana's current B5 default-on toggle.</li>
-            <li>Audit-trail logging at <code>/api/consent/log</code>.</li>
-            <li>Reduces TCPA exposure.</li>
-          </ul>
-        </div>
-        <div>
-          <h4 class="bad">Cons</h4>
-          <ul>
-            <li>Higher opt-in friction = fewer marketing-eligible users (intentional, ethically defensible).</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-
-  </div>
-</section>
-
-<section id="flow" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Data flow (sell-side cascade-fallback path)</h2>
-  <p class="muted mb-4 max-w-3xl text-sm">
-    The user enters a plate that the primary vendor does not have. The cascade
-    falls through to the fallback vendor, resolves, returns. The DegradationLayer
-    surfaces a transparency note ("we used our backup data source"). User sees
-    their car and an estimated offer in under 4 seconds.
-  </p>
-  <div class="mermaid">
+<section id="flow" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">End-to-end data flow</h2>
+  <div class="panel"><pre class="mermaid">
 sequenceDiagram
-  participant User
-  participant React as React App
-  participant Gateway as Gateway (Express)
-  participant Primary as Carfax (primary)
-  participant Fallback as DataOne (fallback)
+    autonumber
+    actor User
+    participant Shell as ChatbotShell
+    participant ChatAPI as /api/chat (SSE)
+    participant Anth as Anthropic (Sonnet 4.5)
+    participant Lookup as /api/lookup/plate
+    participant VC as VendorCascade
+    participant CX as CarsXE
+    participant Sched as Scheduler + SQLite
+    participant NPS as /api/nps/submit
+    User->>Shell: "my plate is XRJ4041 in Texas"
+    Shell->>ChatAPI: POST messages
+    ChatAPI->>Anth: stream + tools
+    Anth-->>ChatAPI: tool_use lookup_plate
+    ChatAPI->>Lookup: dispatch
+    Lookup->>VC: lookupByPlate
+    VC->>CX: GET /platedecoder
+    CX-->>VC: 2021 Toyota Highlander
+    VC-->>Lookup: resolved
+    Lookup-->>ChatAPI: tool_result
+    ChatAPI-->>Shell: SSE text_delta + tool_result + history_sync
+    Shell-->>User: vehicle card + "Is this your vehicle?"
+    User->>Shell: tap Schedule pickup
+    Shell->>Sched: pick slot + POST /book (BEGIN IMMEDIATE)
+    Sched-->>Shell: booked
+    Shell->>ChatAPI: "Pickup booked: Sat 10am at zip:78701"
+    ChatAPI-->>Shell: confirmation prose
+    Shell-->>User: NPS prompt visible
+    User->>Shell: score 9 + comment
+    Shell->>NPS: POST submit (elapsed_seconds)
+  </pre></div>
+</section>
 
-  User->>React: Types plate "XRJ ★ 4041", picks TX
-  React->>React: NormalizationLayer strips ★ → "XRJ4041"
-  React->>Gateway: POST /api/lookup/plate {plate, state}
-  Gateway->>Primary: lookupByPlate(plate, state)
-  Primary-->>Gateway: NotFound
-  Gateway->>Fallback: lookupByPlate(plate, state)
-  Fallback-->>Gateway: Resolved (2008 Toyota Highlander)
-  Gateway-->>React: {kind: "resolved", vehicle, viaVendor: "fallback"}
-  React->>User: ResultPanel + "we used our backup data source"
+<section id="decisions" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Architecture decisions</h2>
+  <table class="decision-table">
+    <thead><tr><th>Decision</th><th>Chosen</th><th>Alternatives</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Chatbot orchestration</td><td>Anthropic tool-use over VendorCascade</td><td>OpenAI function-calling, LangChain agents</td><td>Tool-use is mature; streamed responses first-class; one vendor for chat + vision.</td></tr>
+      <tr><td>Vision provider</td><td>Claude vision</td><td>Google Cloud Vision, Tesseract.js, AWS Textract</td><td>One vendor, one billing relationship, one API key rotation.</td></tr>
+      <tr><td>Scheduler atomicity</td><td>SQLite BEGIN IMMEDIATE + UNIQUE</td><td>Postgres advisory lock, Redis SETNX, ETag CAS</td><td>Simplest correct pattern at demo's concurrency. UNIQUE enforces at storage layer.</td></tr>
+      <tr><td>Scheduling UI</td><td>In-house weekly grid</td><td>Cal.com self-host, Calendly embed</td><td>1-day build, full UX control, no third-party tenant config.</td></tr>
+      <tr><td>Streaming transport</td><td>fetch + ReadableStream</td><td>EventSource, WebSocket, Vercel AI SDK</td><td>Vanilla fetch works on Render free tier without sticky-session config.</td></tr>
+      <tr><td>Support content authoring</td><td>Pre-baked, reviewed, committed</td><td>LLM-generated at runtime</td><td>Hallucinated emotional reassurance is a legal + trust risk.</td></tr>
+      <tr><td>NPS labeling</td><td>n + source on every summary</td><td>Bare integer</td><td>Constitutional rule 13.</td></tr>
+      <tr><td>Perf measurement target</td><td>Deployed Render instance, pre-warmed</td><td>Local dev server, mocked Anthropic</td><td>p95 SLA is meaningful only against production.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="tradeoffs" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Trade-offs</h2>
+  <div class="grid md:grid-cols-2 gap-6">
+    <div class="panel"><h3 class="text-lg font-bold mb-2">Chatbot adds first-token latency</h3><p style="color: var(--muted);" class="text-sm"><strong style="color: var(--accent);">Why I accept it:</strong> streaming makes perceived latency = time-to-first-token. Pre-baked greeting + sub-1.5 s first token reads as immediate.</p><p style="color: var(--muted);" class="text-sm mt-2"><strong style="color: var(--bad);">When it would bite:</strong> if Anthropic outage. Form fallback link stays clickable.</p></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-2">SQLite ephemeral on Render free tier</h3><p style="color: var(--muted);" class="text-sm"><strong style="color: var(--accent);">Why I accept it:</strong> demo concurrency is low; bookings reset on redeploy.</p><p style="color: var(--muted);" class="text-sm mt-2"><strong style="color: var(--bad);">When it would bite:</strong> production. Postgres swap or Render Disk ($1/mo).</p></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-2">Pre-baked support content is rigid</h3><p style="color: var(--muted);" class="text-sm"><strong style="color: var(--accent);">Why I accept it:</strong> hallucinated emotional reassurance is a legal risk. LLM picks WHICH card; humans write the words.</p><p style="color: var(--muted);" class="text-sm mt-2"><strong style="color: var(--bad);">When it would bite:</strong> if Carvana wants A/B-test wording quickly. Cards.ts is one PR.</p></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-2">No buy-side coverage in v2</h3><p style="color: var(--muted);" class="text-sm"><strong style="color: var(--accent);">Why I accept it:</strong> 2 days does not give time for both sides + 4 new capabilities.</p><p style="color: var(--muted);" class="text-sm mt-2"><strong style="color: var(--bad);">When it would bite:</strong> if Carvana grades on buy-side parity. v1 spec covers it.</p></div>
   </div>
 </section>
 
-<section id="decisions" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Decisions</h2>
-  <div class="panel p-2">
-    <table class="decisions">
-      <thead>
-        <tr>
-          <th>Decision</th>
-          <th>What we chose</th>
-          <th>Alternative considered</th>
-          <th>Why</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Architecture pattern</td>
-          <td>Drop-in API gateway</td>
-          <td>Front-end overlay</td>
-          <td>Carvana keeps their existing stack. Integration story = "wire your vendor calls through us."</td>
-        </tr>
-        <tr>
-          <td>Primary vendor</td>
-          <td>Carfax QuickVIN+</td>
-          <td>DataOne, ClearVIN, VinAudit, PlateToVin</td>
-          <td>Industry's deepest plate-to-VIN data; Carvana-scale dealers already have it.</td>
-        </tr>
-        <tr>
-          <td>Fallback vendor</td>
-          <td>DataOne Software</td>
-          <td>Carfax-only-with-retry</td>
-          <td>Independent coverage of fleet/commercial/specialty plates. Real fallback, not just retry.</td>
-        </tr>
-        <tr>
-          <td>OCR primary (web)</td>
-          <td>getUserMedia + Google Cloud Vision</td>
-          <td>Tesseract.js (client-side)</td>
-          <td>Cloud Vision accuracy is materially higher on plates/VINs. $1.50/1k cost is trivial at Carvana scale.</td>
-        </tr>
-        <tr>
-          <td>OCR demo (iOS)</td>
-          <td>SwiftUI + Apple <code>VNRecognizeTextRequest</code></td>
-          <td>React Native + Tesseract</td>
-          <td>On-device, free, no PII over the wire. Privacy slide is the differentiator.</td>
-        </tr>
-        <tr>
-          <td>Frontend framework</td>
-          <td>React + Vite + TypeScript</td>
-          <td>Next.js</td>
-          <td>Lighter; faster dev loop; matches existing Gauntlet repos (boxy-fractions, adversary).</td>
-        </tr>
-        <tr>
-          <td>Backend framework</td>
-          <td>Express on Node 22</td>
-          <td>Hono, Fastify, Nest</td>
-          <td>Unsurprising. A Carvana PM reading the code reads it without learning a new framework.</td>
-        </tr>
-        <tr>
-          <td>Account-creation timing</td>
-          <td>Show prequal terms FIRST, account creation deferred</td>
-          <td>Carvana's pattern (account required before terms)</td>
-          <td>Buy-side finding B8. Show value before asking for commitment.</td>
-        </tr>
-        <tr>
-          <td>TCPA SMS opt-in</td>
-          <td>Default OFF, separate checkbox</td>
-          <td>Pre-checked toggle in fine print</td>
-          <td>Buy-side finding B5. TCPA risk + trust signal.</td>
-        </tr>
-        <tr>
-          <td>Plate → Owner lookups</td>
-          <td>NEVER</td>
-          <td>Allow for "fraud prevention"</td>
-          <td>DPPA. Bartholomew v. Parking Concepts, $2,500/violation minimum.</td>
-        </tr>
-      </tbody>
-    </table>
+<section id="cost" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Cost per onboarding flow</h2>
+  <div class="grid md:grid-cols-2 gap-6">
+    <div class="panel"><h3 class="text-lg font-bold mb-2">Per-flow API cost (USD)</h3><canvas id="costChart" height="220"></canvas></div>
+    <div class="panel"><h3 class="text-lg font-bold mb-2">Scale projection (log axis)</h3><canvas id="scaleChart" height="220"></canvas></div>
   </div>
 </section>
 
-<section id="tradeoffs" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Trade-offs we accept</h2>
-  <div class="grid md:grid-cols-2 gap-4">
+<section id="trust" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Trust boundaries</h2>
+  <div class="panel"><pre class="mermaid">
+flowchart LR
+    subgraph user_side["User browser (untrusted)"]
+      U["<img src='https://cdn.simpleicons.org/safari/000000' width='18'/> Plate, VIN, image, score"]
+    end
+    subgraph our_server["Our Express server (trusted)"]
+      Val["Input validation +<br/>typed domain primitives"]
+      LLM["Tool-use only — no PII in free text"]
+      Sched["Atomic SQLite booking"]
+    end
+    subgraph vendors["Vendors (DPPA / TCPA boundaries)"]
+      Anthropic["<img src='https://cdn.simpleicons.org/anthropic/d4a373' width='18'/> Anthropic"]
+      CXVendor["CarsXE — plate to VIN only<br/>NEVER plate to owner"]
+    end
+    U --> Val
+    Val --> LLM
+    LLM -.tool args only.-> Anthropic
+    LLM -.vehicle data only.-> CXVendor
+    Val --> Sched
+  </pre></div>
+</section>
 
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-2">Single Render web service in the prototype</h3>
-      <p class="text-sm muted mb-3"><strong>Why we accept it:</strong> One URL, zero CORS, deployable in 5 minutes by a Carvana PM via blueprint launch.</p>
-      <p class="text-sm muted"><strong>When it would bite:</strong> A backend bug can take down the static-serve path. Production Carvana splits this into a CDN-fronted static site + standalone API.</p>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-2">VinAudit as prototype primary instead of Carfax</h3>
-      <p class="text-sm muted mb-3"><strong>Why we accept it:</strong> Self-service signup. Carfax QuickVIN+ requires dealer sales contract (weeks of friction).</p>
-      <p class="text-sm muted"><strong>When it would bite:</strong> VinAudit's coverage profile may differ from Carfax's. The adapter interface makes the swap a one-file change for production.</p>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-2">Honest bot-detection messaging</h3>
-      <p class="text-sm muted mb-3"><strong>Why we accept it:</strong> Sliver of obscurity loss against attackers in exchange for meaningful legitimate-user recovery. Sophisticated attackers detect the block independently anyway.</p>
-      <p class="text-sm muted"><strong>When it would bite:</strong> A specific abuse vector that DEPENDS on attackers not knowing detection fired. We have not identified one.</p>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-2">Demo-only mock for prequal soft-pull</h3>
-      <p class="text-sm muted mb-3"><strong>Why we accept it:</strong> Real soft-pull requires Equifax/TransUnion/Experian integration with PII flowing. Out of scope for a one-week prototype.</p>
-      <p class="text-sm muted"><strong>When it would bite:</strong> If the demo gets confused for production. Mitigation: explicit "demo data" label in the UI.</p>
-    </div>
-
+<section id="stack" class="anchor-target max-w-6xl mx-auto px-6 py-12">
+  <h2 class="text-3xl font-bold mb-6">Tech stack</h2>
+  <div class="grid grid-cols-3 md:grid-cols-6 gap-4">
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/anthropic/d4a373" /> Anthropic</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/react/61dafb" /> React 18</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/typescript/3178c6" /> TypeScript</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/vite/646cff" /> Vite</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/express/e8e0cc" /> Express</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/nodedotjs/339933" /> Node 22+</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/sqlite/003b57" /> SQLite</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/render/46e3b7" /> Render</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/playwright/2ead33" /> Playwright</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/vitest/6e9f18" /> Vitest</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/eslint/4b32c3" /> ESLint</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/k6/7d64ff" /> k6</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/github/f2efe6" /> GitHub</div>
+    <div class="stack-card"><img src="https://cdn.simpleicons.org/gitlab/fc6d26" /> GitLab</div>
   </div>
 </section>
 
-<section id="cost" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Cost analysis</h2>
-  <div class="grid md:grid-cols-2 gap-4">
-
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-3">Recovery vs. implementation cost (annual)</h3>
-      <canvas id="recovery-chart" height="220"></canvas>
-    </div>
-
-    <div class="panel p-6">
-      <h3 class="font-semibold accent-warm mb-3">Per-call cost (log scale)</h3>
-      <canvas id="callcost-chart" height="220"></canvas>
-      <p class="muted text-xs mt-2">Cloud Vision OCR is the only meaningful variable. At Carvana's volume the per-call costs are dominated by vendor lookup fees, which Carvana already pays under their dealer contracts.</p>
-    </div>
-
-  </div>
-</section>
-
-<section id="trust" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Trust boundaries</h2>
-  <p class="muted mb-4 max-w-3xl text-sm">
-    PII never enters logs in raw form. The DPPA boundary is enforced at the
-    type-level interface, not by runtime checks. On-device OCR keeps image
-    bytes off the network on iOS.
-  </p>
-  <div class="mermaid">
-flowchart TB
-  classDef pii fill:#1e293b,stroke:#f87171,color:#e2e8f0
-  classDef safe fill:#1e293b,stroke:#34d399,color:#e2e8f0
-  classDef boundary fill:#1a2236,stroke:#fbbf24,color:#e2e8f0
-
-  User["User device<br/>(VIN, plate, photo)"]:::pii
-  Edge["TLS / CORS edge"]:::boundary
-  Gateway["Gateway (Express)"]:::safe
-  DPPA["DPPA boundary<br/>(type-enforced interface)"]:::boundary
-  Vendor["Vendor adapter<br/>(plate → VIN → specs ONLY)"]:::safe
-  NoOwner["plate → owner data: FORBIDDEN"]:::pii
-
-  User -->|HTTPS| Edge --> Gateway
-  Gateway --> DPPA --> Vendor
-  DPPA -.->|type-impossible| NoOwner
-  </div>
-</section>
-
-<section id="stack" class="max-w-6xl mx-auto px-6 py-12">
-  <h2 class="text-2xl font-bold mb-6">Tech stack</h2>
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/react/61dafb" alt="React">
-      <div><div class="font-semibold">React 18</div><div class="muted text-xs">UI framework</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/typescript/3178c6" alt="TypeScript">
-      <div><div class="font-semibold">TypeScript 5.6</div><div class="muted text-xs">Strict + exactOptionalPropertyTypes</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/vite/646cff" alt="Vite">
-      <div><div class="font-semibold">Vite 5</div><div class="muted text-xs">Dev server + build</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/express/ffffff" alt="Express">
-      <div><div class="font-semibold">Express 4</div><div class="muted text-xs">API gateway</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/nodedotjs/339933" alt="Node.js">
-      <div><div class="font-semibold">Node 22</div><div class="muted text-xs">Runtime</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/vitest/6e9f18" alt="Vitest">
-      <div><div class="font-semibold">Vitest 2</div><div class="muted text-xs">Unit + integration</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="6" fill="#45ba4b"/><text x="16" y="22" text-anchor="middle" font-family="-apple-system" font-size="12" font-weight="700" fill="#fff">P</text></svg>
-      <div><div class="font-semibold">Playwright 1.48</div><div class="muted text-xs">E2E</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/eslint/4b32c3" alt="ESLint">
-      <div><div class="font-semibold">ESLint 9</div><div class="muted text-xs">strict-type-checked</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/googlecloud/4285f4" alt="Google Cloud">
-      <div><div class="font-semibold">Cloud Vision</div><div class="muted text-xs">Web OCR</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/apple/e2e8f0" alt="Apple">
-      <div><div class="font-semibold">Apple Vision</div><div class="muted text-xs">On-device iOS OCR</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="6" fill="#0066b3"/><text x="16" y="22" text-anchor="middle" font-family="-apple-system" font-size="11" font-weight="700" fill="#fff">CF</text></svg>
-      <div><div class="font-semibold">Carfax QuickVIN+</div><div class="muted text-xs">Primary vendor</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="6" fill="#10b981"/><text x="16" y="22" text-anchor="middle" font-family="-apple-system" font-size="11" font-weight="700" fill="#fff">VA</text></svg>
-      <div><div class="font-semibold">VinAudit</div><div class="muted text-xs">Prototype primary</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="6" fill="#7c3aed"/><text x="16" y="22" text-anchor="middle" font-family="-apple-system" font-size="11" font-weight="700" fill="#fff">D1</text></svg>
-      <div><div class="font-semibold">DataOne</div><div class="muted text-xs">Fallback vendor</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/render/46e3b7" alt="Render">
-      <div><div class="font-semibold">Render</div><div class="muted text-xs">Hosting</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/github/f2efe6" alt="GitHub">
-      <div><div class="font-semibold">GitHub</div><div class="muted text-xs">Code + CI</div></div>
-    </div>
-    <div class="stack-card panel p-4 flex items-center gap-3">
-      <img src="https://cdn.simpleicons.org/gitlab/fc6d26" alt="GitLab">
-      <div><div class="font-semibold">GitLab</div><div class="muted text-xs">Evaluation mirror</div></div>
-    </div>
-  </div>
-</section>
-
-<footer class="border-t mt-12 py-8 text-sm muted" style="border-color: var(--border);">
-  <div class="max-w-6xl mx-auto px-6 flex flex-wrap items-center gap-4">
-    <span>Carvana Onboarding Recovery Layer — 2026-05-22</span>
-    <a href="https://github.com/scott-lydon/carvana-onboarding">GitHub</a>
-    <a href="https://labs.gauntletai.com/scottlydon/carvana-onboarding">GitLab (evaluation)</a>
-    <a href="../docs/SELL_FLOW_AUDIT.md">Audit report</a>
-    <a href="../docs/roi-calculator.html">ROI calculator</a>
-    <a href="../docs/AUTOMATION_DETECTION_MESSAGING_BRIEF.md">Bot-detection brief</a>
-  </div>
+<footer class="max-w-6xl mx-auto px-6 py-12" style="color: var(--muted); border-top: 1px solid var(--border);">
+  <p>Repositories: <a href="https://github.com/scott-lydon/carvana-onboarding" style="color: var(--accent);">GitHub</a> · <a href="https://labs.gauntletai.com/scottlydon/carvana-onboarding" style="color: var(--accent);">GitLab</a> · <a href="https://carvana-onboarding.onrender.com" style="color: var(--accent);">Live demo</a></p>
+  <p class="text-xs mt-2">Built for Gauntlet AI v2 Carvana onboarding assignment. 2 days. 7 slices.</p>
 </footer>
 
 <script>
   mermaid.initialize({
-    startOnLoad: true,
-    theme: "dark",
-    securityLevel: "loose",
-    themeVariables: {
-      darkMode: true,
-      primaryColor: "#1a2236",
-      primaryBorderColor: "#6366f1",
-      primaryTextColor: "#e2e8f0",
-      lineColor: "#94a3b8",
-      secondaryColor: "#1e293b",
-      tertiaryColor: "#1a2236",
-      background: "#0a0e1a",
-      fontSize: "13px",
-    },
+    startOnLoad: true, theme: 'dark', securityLevel: 'loose',
+    themeVariables: { background: '#0a0e1a', primaryColor: '#1a2236', primaryBorderColor: '#6366f1', primaryTextColor: '#e2e8f0', lineColor: '#94a3b8', fontFamily: 'inherit' }
   });
-
-  // Recovery vs. implementation cost
-  new Chart(document.getElementById("recovery-chart"), {
-    type: "bar",
-    data: {
-      labels: ["Implementation cost", "Conservative recovery", "Base recovery", "Stretch recovery"],
-      datasets: [{
-        data: [600_000, 47_000_000, 62_000_000, 78_000_000],
-        backgroundColor: ["#f87171", "#34d399", "#34d399", "#34d399"],
-        borderColor: ["#f87171", "#34d399", "#34d399", "#34d399"],
-        borderWidth: 1,
-      }],
-    },
-    options: {
-      indexAxis: "y",
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (ctx) => "$" + (ctx.parsed.x / 1_000_000).toFixed(1) + "M",
-          },
-        },
-      },
-      scales: {
-        x: {
-          type: "logarithmic",
-          ticks: {
-            color: "#94a3b8",
-            callback: (v) => "$" + (v / 1_000_000).toFixed(1) + "M",
-          },
-          grid: { color: "#2d3748" },
-        },
-        y: { ticks: { color: "#e2e8f0" }, grid: { display: false } },
-      },
-    },
+  new Chart(document.getElementById('costChart'), {
+    type: 'bar',
+    data: { labels: ['Anthropic chat', 'Anthropic vision', 'CarsXE', 'SQLite', 'Render'], datasets: [{ label: 'Per-flow cost (USD)', data: [0.012, 0.004, 0.000, 0.000, 0.000], backgroundColor: ['#d4a373', '#d4a373', '#6366f1', '#003b57', '#46e3b7'] }] },
+    options: { plugins: { legend: { labels: { color: '#e2e8f0' } } }, scales: { x: { ticks: { color: '#94a3b8' } }, y: { ticks: { color: '#94a3b8' } } } }
   });
-
-  // Per-call costs (log scale)
-  new Chart(document.getElementById("callcost-chart"), {
-    type: "bar",
-    data: {
-      labels: [
-        "NHTSA vPIC (VIN→specs)",
-        "Apple Vision (iOS OCR)",
-        "Google Cloud Vision (web OCR)",
-        "VinAudit (plate)",
-        "Carfax QuickVIN+ (plate)",
-        "DataOne (plate, enterprise)",
-      ],
-      datasets: [{
-        data: [0.0001, 0.0001, 0.0015, 0.3, 0.5, 1.5],
-        backgroundColor: "#6366f1",
-        borderColor: "#6366f1",
-      }],
-    },
-    options: {
-      indexAxis: "y",
-      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => "$" + c.parsed.x.toFixed(4) + " / call" } } },
-      scales: {
-        x: { type: "logarithmic", ticks: { color: "#94a3b8", callback: (v) => "$" + v }, grid: { color: "#2d3748" } },
-        y: { ticks: { color: "#e2e8f0" }, grid: { display: false } },
-      },
-    },
+  new Chart(document.getElementById('scaleChart'), {
+    type: 'line',
+    data: { labels: ['100', '1k', '10k', '100k', '1M'], datasets: [{ label: 'USD per day', data: [1.6, 16, 160, 1600, 16000], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true }] },
+    options: { plugins: { legend: { labels: { color: '#e2e8f0' } } }, scales: { x: { ticks: { color: '#94a3b8' } }, y: { type: 'logarithmic', ticks: { color: '#94a3b8' } } } }
   });
 </script>
-
 </body>
 </html>

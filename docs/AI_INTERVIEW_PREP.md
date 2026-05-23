@@ -1,134 +1,111 @@
-# AI Video Interview Prep — Carvana Onboarding Recovery Layer
+# AI interview prep — Carvana onboarding recovery layer (v2)
 
-[**AI video interview portal**](https://portal.gauntletai.com/video-interview) (primary) — [mirror](https://gauntlet-portal.web.app/video-interview) (fallback if the host has a bug; keep any `?id=` query string the email gave you).
-
-The interview asks 4 questions in 5 minutes. About 75 seconds per Q + A. Each prepared answer below is a ~60-second spoken block (~150 words) so there is buffer for a brief follow-up. You will only field 4 of the 12+ answers here; the rest are insurance.
-
----
-
-## 60-second elevator pitch (always lead with this if asked "tell me about your project")
-
-The Carvana Onboarding Recovery Layer is a graceful-degradation layer between Carvana's sell-flow entry form and their existing vendors. We built it because Carvana's current page collapses at least six distinct failure modes into one identical error message, which converts recoverable users into churned leads. Our layer separates each failure cause and routes it to the right recovery: format normalization for the Texas asterisk plates, character-permutation suggestions for I-versus-1 and O-versus-0 typos, vendor cascade for coverage gaps, OCR camera capture for the dead ends, and honest error copy when bot detection fires. Conservative annual recovery, calculated against Carvana's Q1 2026 numbers, is $47 million in acquisition spend, with under two weeks of payback. The number that matters most is the per-failure-mode telemetry we add; Carvana cannot measure today what each failure costs them.
+> Open the interview here: [AI video interview portal](https://portal.gauntletai.com/video-interview).
+> Fallback: [mirror](https://gauntlet-portal.web.app/video-interview).
+> The portal asks 4 questions in ~5 minutes. We don't know which 4 will come up, so this file pre-bakes 12+ answers. The top section covers questions that ALWAYS get asked; rubric-pillar answers cover the four big categories; backup bench covers everything else.
 
 ---
 
-## Always-asked meta questions (prepare every submission)
+## 60-second elevator pitch
 
-These three appear nearly every interview. Recurring entries pulled from the Gauntlet question log.
-
-### Q1: Walk me through the data flow of this feature.
-
-The user enters a plate and a state on our React entry form. The frontend's normalization layer strips the Texas asterisk, whitespace, dashes, and dots, uppercases the result, and validates the length against the state's allowed range. The normalized string posts to our Express gateway. The gateway dispatches to a vendor cascade: primary vendor with a two-second timeout, then the fallback vendor on miss, then OCR camera capture if both miss. Every cascade outcome is a discriminated union of `resolved`, `not_found`, `transient_error`, `bot_detected`, or `format_error`. The frontend's degradation layer pattern-matches each case to its own user-facing copy and next-action prompt. There is no shared error code path. Nothing gets collapsed into a single hostile string, which is the literal opposite of what Carvana does today.
-
-### Q2: What would you do differently next time or if you had more time?
-
-Three things. First, I would actually negotiate Carfax QuickVIN Plus sandbox access before starting the build, because the prototype-grade VinAudit signup was a budgeted detour from the production-recommended vendor. Second, I would add LLM-mediated rescue copy earlier; the static copy paths are honest but a small Haiku call can soften the language to match the user's apparent emotional state. Third, I would invest in property tests against the cascade from day one, so the permutations of [primary hit, primary miss / fallback hit, primary timeout / fallback miss, both error] are all asserted instead of hand-tested. The interesting non-feature I would NOT add: more vendors. Two-vendor cascade plus OCR captures the long tail; a third vendor adds cost and integration risk without meaningful coverage gain.
-
-### Q3: What did you find challenging?
-
-The hardest part was reframing the audit's central claim. I started with "Carvana's plate vendor is broken; fix the integration." After cross-machine testing showed the same plate succeeding on a different IP, I realized the failure I was diagnosing was bot detection, not vendor coverage. That changed the entire frame. The fix is not a vendor swap; it is honest error copy plus format normalization plus character-permutation recovery. The technical work was straightforward; the strategic work was admitting that the load-bearing problem is the message string Carvana shows, not the data underneath it. Once that landed, the architecture wrote itself: a discriminated-union return shape from the cascade, with one named branch per real failure cause, rendered through a small set of human-readable copy paths.
+Two-day rebuild of Carvana's sell-side onboarding as a conversational chatbot that wraps real vendor APIs, captures VINs via the camera using Claude vision, books pickup atomically against SQLite with no double-booking, and surfaces pre-baked support content at known anxiety moments. Live at carvana-onboarding.onrender.com. Seven slices A through G, 67 tests passing, p95 latency 137 milliseconds, dual-pushed to GitHub and GitLab. The trade-off I'd defend hardest: pre-baked empathy text instead of LLM-generated reassurance. Hallucinated trust-building is a legal risk; auditable static copy isn't.
 
 ---
 
-## Four rubric-pillar questions (one anchor answer each)
+## Always-asked questions (prepare these every submission)
 
-### P1: Architecture
+### "Walk me through the data flow of this feature/functionality."
 
-The architecture is a drop-in API gateway pattern. Carvana's existing frontend keeps its UI and its existing vendor contracts; our gateway sits between the frontend's submit and the vendor's network call. The gateway owns the cascade (primary vendor, then fallback, then OCR), the timeout enforcement, the bot-detection awareness, and the structured return shape. Concrete vendor adapters live behind a single `VendorAdapter` interface in `src/lookup/types.ts`; the cascade does not know about Carfax or DataOne or VinAudit specifically. The DPPA boundary is type-enforced at the interface level: adapters can request plate-to-VIN-to-specs, and the interface does not expose plate-to-owner fields, so a type-level violation is impossible. The trade-off: a single Render web service for the demo means one URL and zero CORS, with the production-scale split (CDN-fronted static + standalone API) noted in the plan as the next migration.
+The user opens the chat surface. They type their plate and state in natural language. The React shell posts the message history to /api/chat. The chat handler streams an Anthropic Messages call back via SSE. Anthropic emits a tool_use block for lookup_plate. The handler dispatches to the existing VendorCascade, which calls CarsXE. CarsXE returns the resolved vehicle. The handler posts a tool_result block back to Anthropic and continues the stream. Anthropic emits a short confirmation reply. The React shell renders the vehicle as a card next to the assistant bubble. The assistant's text never echoes the plate value, only the year, make, and model. After confirmation, the user taps Schedule pickup. The Scheduler component fetches available slots from /api/schedule/slots and POSTs the chosen one to /api/schedule/book, which wraps a BEGIN IMMEDIATE transaction around an INSERT with UNIQUE on slot_start and scope. A booking confirmation appears as a user message in the chat. The NpsSurvey widget renders. The user scores zero to ten, and the elapsed time is recorded.
 
-### P2: Scalability
+### "What would you do differently next time or if you had more time?"
 
-Scalability matters in two dimensions for this product: vendor call throughput and OCR cost-at-scale. For vendor calls, the cascade with per-vendor timeouts means the worst-case latency is bounded at the sum of the timeouts (about 4 seconds for two vendors); per-vendor rate limits are honored via independent token buckets per adapter. For OCR, the architecture pushes work to the client where possible: iOS uses Apple Vision on-device with no network round trip, and the web path uses Google Cloud Vision at $1.50 per thousand calls. At Carvana's volume (35 million monthly visits, an estimated 8 percent of which are sell-side, with a fraction reaching the OCR fallback), the OCR cost is a few thousand dollars per month against the conservative $47 million annual recovery. The architecture handles their full traffic with the existing vendor contracts; we add the failure-mode telemetry that lets them measure for the first time.
+Three things. First, I'd ship the buy-side prequal flow that's deliberately out of v2 scope. Two days only fit sell-side; with three or four I'd restore the buy-side and unify both surfaces under the same chatbot. Second, I'd swap SQLite for Postgres so the demo persists across redeploys. The UNIQUE constraint pattern is identical so it's a 30-minute change. Third, I'd add a real telemetry pipeline so the metrics overlay numbers feed something durable like Datadog instead of a dev-only on-page panel. Right now the NPS sample size in production is whatever respondents submitted since the last redeploy.
 
-### P3: Security
+### "What did you find challenging?"
 
-Security splits into three: PII handling, DPPA compliance, and consent. For PII: VIN is borderline PII and plate is geolocatable PII, so neither is logged in raw form; only hashed identifiers go to telemetry. On-device OCR on iOS keeps the image bytes off the network. The DPPA boundary is hard-coded at the type level: adapters declare `lookupByPlate(plate, state)` and `lookupByVin(vin)` and there is no exposed method for plate-to-owner. The Bartholomew California case in February raised the per-violation statutory minimum to $2,500, so this is not a theoretical concern. For consent: the proposed `ConsentManager` defaults all marketing toggles to OFF and surfaces the User Agreement and E-SIGN consent as separate checkboxes, not click-wrap inferred from submit. This is the literal opposite of Carvana's current buy-side flow, which is a TCPA risk we documented in the audit.
-
-### P4: Testing
-
-Testing has three layers. Unit tests cover the domain primitives: `Plate` normalization (the Texas asterisk corpus is the fixture), `Vin` validation (including the I/O/Q permutation hint), `StateCode` parsing. Vitest, jsdom environment, 14 unit tests passing at slice 1 commit. Integration tests hit real vendor sandboxes with property-based fuzzing via `fast-check`; mocked vendor responses in integration tests are explicitly forbidden in the constitution because mocked integration is exactly the failure mode we are critiquing. End-to-end tests in Playwright cover each named failure mode from the audit's S1 to S6 and B0 to B8 catalog. The CI workflow runs typecheck, lint with zero-warnings policy, unit, e2e, and a placeholder check on every push. Slice gates include a fresh-context qa-adversary sub-agent invocation before merge.
+Two real challenges. The first was the historyRef bug in the chatbot's multi-turn handling. I shipped slice A with the user message pushed to history but not the assistant turn or the tool_result turn. The qa-adversary sub-agent caught it as a blocker. I fixed it by adding a history_sync SSE event that ships the full Anthropic-shaped messages array back to the client at the end of every turn. The second was Render's auto-deploy being off without me knowing. I pushed five commits before realizing the deployed instance was stale. I caught it via a curl probe and triggered a manual deploy. The takeaway was checking the deployed commit hash against local on every submit-gate run.
 
 ---
 
-## Anticipated follow-ups for each pillar
+## Four rubric-pillar anchors
 
-### After P1 (Architecture)
-- **"Why a gateway instead of a microservice mesh?"** Because Carvana's existing stack is monolithic and a gateway integrates without forcing them to refactor. A mesh is the right move at a different stage of their product evolution; today, a single shimmed layer ships in a week and proves the recovery thesis.
-- **"Doesn't the gateway become a single point of failure?"** Yes, exactly like every other integration layer in their stack today. The gateway has a health check, a circuit-breaker per vendor, and Carvana can run multiple replicas behind their existing load balancer. The single-process Render demo is for the prototype; production runs as many replicas as Carvana's traffic needs.
+### Architecture pillar
 
-### After P2 (Scalability)
-- **"What about latency p99?"** Cascade worst case is bounded by the sum of vendor timeouts, currently 2 seconds plus 2 seconds plus the OCR roundtrip if it fires. The frontend never blocks on the full cascade; it streams partial progress so the user sees "trying our backup data source" after the first timeout.
-- **"What if Carvana hits Cloud Vision's quota?"** They contract their own quota at their volume; the line item is in the cost model.
+The chatbot orchestrator pattern means the LLM is the user surface and the existing services are the tools. Adding a capability means adding a tool, not re-architecting. The slice-1 VendorCascade did not need to change. The vendor adapters did not need to change. The DegradationPanel did not need to change. The chatbot just calls into them via tool-use and renders the structured tool_result inline. See server/chat/tools.ts for the dispatch table, plan.md for the topology, and src/components/ChatbotShell.tsx for the orchestration on the client side. This is the architecture I'd defend hardest because it's the one I'd ship at Carvana scale.
 
-### After P3 (Security)
-- **"How do you prevent the gateway from being scraped?"** Same way Carvana prevents their own page from being scraped today: rate limiting, bot detection signals, and now (per the audit) honest copy when those signals fire so legitimate automation users have a recovery path.
-- **"What about GDPR?"** Out of scope for the US-only sell flow; the architecture's PII-minimization rules generalize to GDPR-style frameworks if Carvana expands.
+### Scalability pillar
 
-### After P4 (Testing)
-- **"How do you test the OCR path without real photos?"** A test corpus of plate photos lives in the repo at `test-plates/`. Five real Texas asterisk plates today; we add new edge cases (specialty plates, multi-line plates, low-light shots) as we find them.
-- **"How do you handle flaky e2e against real vendors?"** Vendor calls in e2e are gated by an env flag and run against vendor sandboxes (Carfax dev tier, VinAudit B2B sandbox). Production-data calls are blocked by ESLint rule against `*.carvana.com` in test files.
+The atomic scheduler uses BEGIN IMMEDIATE plus a UNIQUE constraint on slot_start and scope. The regression test at tests/integration/scheduler-concurrency.test.ts fires 10 parallel bookings of the same slot and asserts exactly one wins. The streamed chat responses keep first-token latency under 1.5 seconds at the perceived-latency level. The k6 perf test at scripts/perf/load.k6.js runs against the deployed Render instance and reports p95 per endpoint. Latest run is 137 milliseconds for the NPS write, 154 for the health probe, 157 for the slot query, with zero failures across 196 requests. All three an order of magnitude under the PRD's 3-second threshold.
 
----
+### Security pillar
 
-## Backup bench — 6 to 10 additional likely questions
+Constitutional non-negotiable 9 says the LLM's free-text response must never contain the user's plate, VIN, address, or other identifying value. PII flows into the chatbot only as tool-use arguments. The vehicle data is rendered as a structured card next to the assistant bubble, not embedded in prose. A regression test at tests/adversary/CAT-11-pii-in-free-text.spec.ts drives a real Anthropic call and asserts the assistant's prose does not contain the plate value. The DPPA boundary is enforced at the request shape: every vendor call asks plate to VIN to specs, never plate to owner. The Bartholomew v. Parking Concepts case from February 2026 raised the statutory minimum to twenty-five hundred per violation.
 
-### Q: How did you decide which AI to use where?
+### Testing pillar
 
-The AI surface in this product is targeted, not pervasive. Three places: OCR (Apple Vision on iOS, Google Cloud Vision on web; small, well-scoped, no LLM); character-permutation suggestion (a deterministic algorithm, not an LLM; the search space is tiny); LLM-mediated rescue copy (stretch slice, Haiku, only fires after three lookup attempts to keep cost bounded). I deliberately avoided putting an LLM in the hot path of every lookup; that would add latency, cost, and a class of failure mode we cannot test deterministically. Where an LLM adds value is at the human-readable-copy boundary, where soft natural language matters more than a deterministic answer.
-
-### Q: How did you handle disagreements with the AI assistant during development?
-
-The biggest disagreement was on the audit's frame. The assistant initially synthesized "Carvana's plate vendor is broken; fix the integration" from the live walkthrough. After I tested on a friend's machine and the same plate worked, I pushed back. The assistant updated the audit, escalated the bot-detection-as-disguised-blame finding to a marquee position, and rewrote the headline. The frame the audit ships with is cleaner than the assistant's original, because the disagreement surfaced a stronger underlying claim.
-
-### Q: What is the single biggest risk to this product?
-
-That Carvana ships a half-version of the fix: the format normalization layer for the asterisk case (because it is easy and obviously right) without the bot-detection honest copy (because it requires admitting the bot is firing). If they ship only the easy half, they recover the format-issue users and leave the bot-detected users still bouncing. The audit deliberately leads with bot detection so the hard half is not optional.
-
-### Q: How does this compare to Carvana's existing developer team?
-
-The architecture this report proposes is well within Carvana's engineering capability; they have not shipped it because organizational incentives reward "do not surface the failure" over "be honest with the user." Our value-add is the audit and the working prototype, both of which make the easy decision the right decision.
-
-### Q: What if Carvana already plans to do this?
-
-Then we are delivering the audit, the test corpus, the ROI model, the prototype, and a working argument with their leadership. The road map alignment is a positive, not a negative.
-
-### Q: Why these specific 17 redesign features?
-
-Each feature in the proposal maps to a specific finding in the audit. Feature 1 (cascade) addresses S4 (vendor coverage miss). Feature 2 (normalization) addresses EC1 (Texas asterisk) and EC4 (whitespace / dashes). Feature 3 (permutation) addresses EC2 (I/O typos). Feature 4 (OCR) addresses EC9 (specialty plates) and EC11 (multi-line plates). Feature 5 (error taxonomy) is the load-bearing fix for the bot-detection blame. None of the 17 is decorative.
-
-### Q: How would you deploy this in production?
-
-Render web service for the demo. For Carvana production, the gateway sits behind their existing load balancer as a sidecar or as a routable backend; the static frontend is served by their existing CDN. Deployments are Conventional Commits driving CI which runs typecheck + lint + unit + e2e + qa-adversary; merges to main trigger deploy to Render (autoDeploy is currently off per their boxy-fractions pattern, manual deploy button preferred).
-
-### Q: What is in scope and what is out of scope?
-
-In scope: the sell-flow entry step and the buy-side prequalification entry step, both end-to-end through their respective happy paths and named failure modes. Out of scope this iteration: actual sale completion, delivery scheduling, post-sale flows. Also out of scope: rebuilding Carvana's identity verification (the spec is the natural next pillar but the audit's value is in the entry step).
+Sixty-seven tests across unit, property, integration, e2e, and adversary categories. Property tests cover every permutation of the vendor cascade. Integration tests cover the chat streaming headers, the OCR validation paths, the scheduler concurrency, the NPS Bain-formula correctness. Playwright e2e covers the v2 chatbot happy path end-to-end against real Anthropic plus real CarsXE. The qa-adversary sub-agent runs in a fresh Claude Code context on every slice, briefed against the constitution and QA_ADVERSARY.md, with no access to my reasoning so it cannot rationalize the regressions away. On slice A it caught two blockers I fixed in the same turn.
 
 ---
 
-## Escalation block — what to say if the first answer does not land
+## Anticipated follow-ups
 
-- **If the interviewer doubts the $47 million number:** "Conservative inputs only. Carvana publishes $630 advertising-per-retail-unit in their Q1 2026 10-K. Even a 5% recovery at half the assumed traffic justifies the implementation cost in the first quarter."
-- **If the interviewer challenges the bot-detection framing:** "Cross-machine test: same plate, same browser, different IP, different result. The failure is not the plate; it is the session score. Carvana's current copy converts the bot-detection signal into a blame-the-user message that costs them legitimate users."
-- **If the interviewer asks why we did not rebuild more of Carvana:** "The entry step is the funnel choke point. Every fix downstream of entry only matters for users who clear entry. Fixing entry recovers users for the entire downstream funnel."
-- **If the interviewer pushes on AI usage:** "AI is in the loop at three specific points: OCR, character-permutation hinting, and LLM-mediated rescue copy. Each is sized to its impact. The architecture does not put an LLM in every lookup because lookups need to be deterministic and fast."
+**"You said the chatbot doesn't echo PII. Show me where."** Open server/chat/system-prompt.ts. The first hard rule forbids it. Then open tests/adversary/CAT-11-pii-in-free-text.spec.ts. It drives a real chat call and asserts the assistant text doesn't contain the literal plate. Both the prompt-level instruction and the regression test are in the repo.
 
----
+**"What if Anthropic adds a model that ignores your hard rule?"** The regression test catches it on the next CI run. If we shipped without the test catching it, we'd add a deterministic post-filter to redact the plate value from any text_delta event before forwarding to the client.
 
-## Moment-of-truth block — defending decisions the LLM made for you
+**"How do you know p95 is really under 3 seconds?"** The k6 report at docs/perf-report.md shows the target URL, the commit hash, the per-endpoint p95, and the failure rate. The script's threshold fails the run if any endpoint exceeds 3000 milliseconds. It targets the deployed Render instance, not the dev server. Reporting against the dev server is CAT-16.
 
-- **The drop-in gateway pattern (commit `654db5e` decision in `plan.md`):** I asked Claude to compare gateway versus frontend-overlay; it proposed both with trade-offs. I picked the gateway because Carvana could buy it without rewriting their frontend, and I documented the decision in `plan.md`. The audit logic is mine; Claude wrote the prose.
-- **The vendor-agnostic adapter interface (commit `b914f2b`, file `src/lookup/types.ts`):** I had Claude draft the interface; I reviewed and pushed back on a `lookupByOwner` method that would have crossed the DPPA boundary. The final interface has only the two safe methods.
-- **The honest-error-taxonomy frame (commit `654db5e`, `SELL_FLOW_AUDIT.md`):** I supplied the cross-machine test result. Claude synthesized the connection between bot detection and the "we couldn't find your plate" copy. The escalation to marquee finding was my call; Claude executed the rewrite.
+**"How do you handle the slot-race condition?"** BEGIN IMMEDIATE acquires a RESERVED SQLite lock before any read in the transaction. The UNIQUE constraint enforces uniqueness at the storage layer regardless of how the application logic is wired. tests/integration/scheduler-concurrency.test.ts fires 10 parallel bookings and asserts exactly one succeeds.
 
 ---
 
-## Things to NOT say (would tank the interview)
+## Backup bench (6 to 10 likely)
 
-- "I think the AI just decided..." — own the decisions, even the ones the assistant proposed.
-- "I didn't really test the OCR path." — Specify what you DID test (the test corpus, the failure-mode taxonomy) and what is pending (real vendor sandbox keys).
-- "Carvana is bad at this." — Be honest about the finding but professional in framing. They have constraints; we are proposing improvements.
-- "We don't need vendor sandboxes; we can mock." — The constitution says no. Mocked vendor integration is exactly the failure mode the audit critiques.
-- "It works on my machine." — If a deployed URL is not live, name the credential wall (Render dashboard one-click) and the path forward.
-- Hedging like "maybe," "kind of," "I guess" on the headline numbers. The $47 million number is conservative and sourced.
-- "Specifically," "Concretely," "Notably" as sentence openers. They sound rehearsed.
+**Cost.** Per-flow Anthropic cost is about 1.6 cents for chat plus 0.4 cents for vision. Render free tier carries no per-flow cost. CarsXE sandbox is free. At 1000 flows per day, that's $16 per day. At a million, $16k per day, which is where you'd start renegotiating with Carfax for production CarsXE replacement.
+
+**Team workflow.** Every code change runs typecheck, lint, vitest, and the qa-adversary sub-agent in a fresh Claude Code context. Each slice gets its own commit with the conventional-commits subject line. Dual-push verifies GitHub and GitLab hashes match after every push.
+
+**AI-assisted decisions.** Two big ones. The chatbot tool-use pattern over the existing VendorCascade — I picked it because it lets the LLM be the user surface without re-architecting the services. Pre-baked support content over LLM-generated empathy — I picked it because hallucinated trust-building copy is a legal risk that auditable static text eliminates.
+
+**Deployment.** Render free tier auto-deploys from the main branch when auto-deploy is on; the deploy hook URL lets me trigger deploys via curl without browser interaction. Manual deploys via dashboard work as a fallback. Render spins down free-tier instances after 15 minutes of idle; the k6 setup() function pre-warms with a health probe to dodge that cost during measurement.
+
+**Observability.** Dev-only metrics overlay at ?metrics=1 shows current chat flow elapsed time plus NPS summary with sample-size labeling. Slice F's k6 perf-report.md feeds the architecture website's stat cards.
+
+**Prior-week comparison.** v1 was a graceful-degradation thesis: chatbot was not in scope, scheduling was explicitly out of scope. v2 PRD prescribed both. v2 keeps slice 1's CarsXE plate decoder unchanged and wraps it in the chatbot tool-use loop. Nothing from v1 was thrown away.
+
+**Dependency choices.** Anthropic SDK for the LLM. better-sqlite3 for synchronous SQLite (faster install than native bindings would suggest, and the test mocking story is clean). k6 for load. No agent framework, no SSE library, no calendar library. Each kept-out dependency is documented in plan.md.
+
+**Error handling.** Constitutional rule says catch blocks either rethrow, surface to the user via the DegradationLayer, or log AND continue with an explicit comment naming why. CAT-1 regression catches anything that catches and silently continues.
+
+**Accessibility.** ARIA labels on the chat input, the score buttons, the camera viewfinder, the slot grid. aria-live on the chat transcript so screen readers announce new turns. Not WCAG-audited; flagging this as a v3 task.
+
+**Demo-vs-production gap.** Three known: ephemeral SQLite, no real SMS confirmation, mock pre-qual estimator (out of v2 scope). Each is documented as a "what this report does not measure" section in the relevant slice doc.
+
+---
+
+## Escalation block (if the first rebuttal does not land)
+
+**Re-ask: "Why not just use [other LLM]?"** Anthropic's tool-use is mature, the streaming API is first-class, and we get vision in the same vendor relationship for free. OpenAI's function-calling is comparable on the chat side but ships separately from vision. Cutting a vendor relationship saves us a billing relationship, an API key to rotate, and a different SDK for the same call shape.
+
+**Re-ask: "Why not just use Postgres?"** SQLite ships zero-dep, BEGIN IMMEDIATE plus UNIQUE constraint is the simplest correct atomic-booking pattern, the demo's concurrency budget is well under SQLite's WAL-mode capacity (50k writes per second on commodity hardware), and Postgres adds 30 minutes of provisioning for no correctness change.
+
+**Re-ask: "Why not use Cal.com?"** Two days, full UX control over the inline-in-chat rendering, no third-party tenant config. Cal.com is the right answer for a production rollout where the booking is calendar-aware on the user's side; for this prototype, in-house ships faster and the atomic-booking story is OUR story to tell, not Cal.com's.
+
+---
+
+## Moment-of-truth block (defending LLM-made decisions)
+
+The chatbot decided to call lookup_plate the first time without explicit user confirmation of the parsed plate and state. This was MY decision in the system prompt: low-friction first, verification on result. Commit `e0331bd` is the original system prompt; commit `b34a5b0` is the cleanup that removed slice-number leakage. If a reviewer challenges either: the audit log is in git, with the message bodies explaining the trade-off.
+
+The Render env-var addition for ANTHROPIC_API_KEY was made through the dashboard via Chrome MCP. The action wrote the key to the production env, was committed nowhere, and was followed by a fresh deploy. Commit `66d42e5` is the env-file fix that made local development pick up .env.local correctly; this is the bug the env-var addition exposed but didn't cause.
+
+---
+
+## Things to NOT say
+
+- "The AI decided." (I decide; the LLM proposes within constraints I set.)
+- "I didn't really test." (I have 67 tests, including a 10-parallel concurrency test and a real-Anthropic PII-in-free-text test.)
+- "It works on my machine." (Live at carvana-onboarding.onrender.com. Verified end-to-end on the deployed instance.)
+- "Just trust me." (Everything I claim has a file path or a commit hash next to it.)
+- "Move fast and break things." (The qa-adversary sub-agent and submit-gate run on every slice for a reason.)
