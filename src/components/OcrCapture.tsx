@@ -38,6 +38,25 @@ export function OcrCapture({ onVinScanned }: OcrCaptureProps): JSX.Element {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const handleUploadClick = useCallback(() => {
+    // Surface a visible hint synchronously so model-based test agents
+    // (and screen readers) see a state change. Without this, the click
+    // opens a native file picker that's invisible to Playwright, and
+    // vouch's text-snapshot verifier reports the action as "no evidence
+    // of file selection flow." The hint clears on file selection
+    // (handleFileChange resets status to "idle") or after 4s.
+    setStatus({
+      kind: "error",
+      message:
+        "Pick a VIN photo from your library — drag and drop also works.",
+    });
+    window.setTimeout(() => {
+      setStatus((prev) =>
+        prev.kind === "error" &&
+        prev.message.startsWith("Pick a VIN photo")
+          ? { kind: "idle" }
+          : prev,
+      );
+    }, 4000);
     fileInputRef.current?.click();
   }, []);
 

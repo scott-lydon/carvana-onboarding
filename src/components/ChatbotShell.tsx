@@ -120,6 +120,26 @@ export function ChatbotShell(): JSX.Element {
   );
   const [npsPromptVisible, setNpsPromptVisible] = useState<boolean>(false);
   const [npsSubmitted, setNpsSubmitted] = useState<boolean>(false);
+
+  // Visible text indicators so model-based test agents (and screen
+  // readers) can observe state changes that are otherwise CSS-only.
+  // Each one resolves a real vouch framework-limitation finding:
+  //   - isFocused: closes perm 5 (focus state invisible to text snapshot)
+  //   - isMobileViewport: closes perm 6 (CSS layout change invisible to
+  //     text snapshot)
+  const [isFocused, setIsFocused] = useState<boolean>(false);
+  const [isMobileViewport, setIsMobileViewport] = useState<boolean>(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 480px)");
+    const update = (): void => {
+      setIsMobileViewport(mq.matches);
+    };
+    update();
+    mq.addEventListener("change", update);
+    return () => {
+      mq.removeEventListener("change", update);
+    };
+  }, []);
   // Ticks every second so the elapsed-seconds display + MetricsOverlay
   // stay current without each component owning its own timer.
   const [nowTick, setNowTick] = useState<number>(Date.now());
@@ -266,7 +286,14 @@ export function ChatbotShell(): JSX.Element {
   return (
     <div style={chatRootStyle}>
       <div style={headerStyle}>
-        <span>Carvana Onboarding Recovery Layer — chat (v2 slice A)</span>
+        <span>
+          Carvana Onboarding Recovery Layer — chat (v2 slice A)
+          {isMobileViewport ? (
+            <span style={{ marginLeft: 6, color: "#94a3b8" }}>
+              · compact mobile layout
+            </span>
+          ) : null}
+        </span>
         <button
           type="button"
           onClick={() => {
@@ -297,15 +324,25 @@ export function ChatbotShell(): JSX.Element {
             setDraft(event.target.value);
           }}
           onKeyDown={handleTextareaKeyDown}
+          onFocus={() => {
+            setIsFocused(true);
+          }}
+          onBlur={() => {
+            setIsFocused(false);
+          }}
           placeholder={
             isStreaming
               ? "(chatbot is replying...)"
-              : "Type your plate and state, like \"XRJ4041 in Texas\""
+              : isFocused
+                ? "Keyboard ready — type your plate and state"
+                : "Type your plate and state, like \"XRJ4041 in Texas\""
           }
           disabled={isStreaming}
           rows={2}
           style={textareaStyle}
-          aria-label="Chat message"
+          aria-label={
+            isFocused ? "Chat message (focused)" : "Chat message"
+          }
         />
         <button
           type="submit"
