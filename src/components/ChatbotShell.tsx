@@ -64,6 +64,7 @@ type SseEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_use_start"; tool_use_id: string; name: string }
   | { type: "tool_result"; tool_use_id: string; name: string; result: unknown }
+  | { type: "history_sync"; messages: ChatMessage[] }
   | { type: "done"; stop_reason: string }
   | { type: "error"; message: string };
 
@@ -135,6 +136,18 @@ export function ChatbotShell(): JSX.Element {
         await streamChatResponse({
           messages: historyRef.current,
           onEvent: (event) => {
+            // history_sync carries the FULL Anthropic-shaped messages
+            // array from the server (user turn + assistant turn + any
+            // tool_result blocks). Replacing historyRef with it is what
+            // makes multi-turn conversation work — without this the
+            // second user message would be sent without prior-turn
+            // context and the chatbot would behave as if turn 1 never
+            // happened. (Project CLAUDE.md "chatbot conversational
+            // smoke test" rule, QA finding 2 on slice A.)
+            if (event.type === "history_sync") {
+              historyRef.current = event.messages;
+              return;
+            }
             applySseEventToTurns(event, setTurns);
           },
         });
@@ -435,6 +448,11 @@ function applySseEventToTurns(
           ],
         };
         return next;
+      case "history_sync":
+        // history_sync is handled at the streamChatResponse layer (it
+        // updates historyRef); the UI turn list is independent of the
+        // wire history. No UI change here.
+        return prev;
       case "done":
         next[lastIdx] = { ...last, complete: true };
         return next;

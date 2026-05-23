@@ -157,6 +157,15 @@ async function runChatLoop(
     messages.push({ role: "assistant", content: finalMessage.content });
 
     if (finalMessage.stop_reason !== "tool_use") {
+      // Emit the full assistant history so the client can preserve it for
+      // the next user turn. Without this, the client only sees text deltas
+      // and tool_result events, and cannot reconstruct the Anthropic-shaped
+      // assistant message needed for multi-turn conversation. The server
+      // is stateless; the client owns the conversation history.
+      writeSseEvent(res, {
+        type: "history_sync",
+        messages,
+      });
       writeSseEvent(res, {
         type: "done",
         stop_reason: finalMessage.stop_reason ?? "end_turn",
