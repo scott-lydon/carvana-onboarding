@@ -1,41 +1,45 @@
 /**
- * ChatbotShell — the v2 primary entry surface.
+ * ChatbotShell — the primary entry surface.
  *
- * Owns the chat history and renders one of three things per turn:
- *   - A user bubble (right-aligned).
- *   - An assistant bubble (left-aligned) carrying streamed text plus any
- *     tool_use cards (vehicle data, scheduler, support content, etc.).
- *   - An inline tool_result card next to the assistant bubble that
- *     triggered it. The card is the structured rendering of the tool's
- *     output; the assistant's text never repeats PII (constitution
- *     non-negotiable #9, CAT-11).
+ * Owns the chat history and renders user / assistant bubbles plus inline
+ * tool_result cards (vehicle card, support card, demo-mode panel). The
+ * assistant bubble body is markdown-rendered (react-markdown with a
+ * tight allowlist) so the model's `**bold**` / `code` / lists render
+ * the way the model wrote them.
  *
- * Streaming uses fetch + ReadableStream (no EventSource library, per
- * plan.md v2 decision). Each `data: {...}` line in the response is parsed
- * incrementally; partial lines stay in the buffer until the next `\n\n`.
+ * Three side surfaces are mounted in a unified CTA row below the
+ * composer: "Scan VIN with camera", "or upload a photo", "Schedule
+ * pickup". The OCR + Scheduler bodies are hook-based so their CTAs sit
+ * next to each other and their expanded panels stack below.
  *
- * Pre-bake the greeting client-side so the first paint is instant — the
- * server isn't called until the user sends their first message.
+ * Drag-and-drop: the entire chat root catches dragenter/dragover/drop
+ * and routes a dropped image through the OCR pipeline.
+ *
+ * Chat error UX: failures surface the actual HTTP status code (or the
+ * underlying TypeError on a Safari mid-stream drop) rather than a
+ * generic "Load failed". 503 configuration_missing messages render
+ * verbatim so the user sees the missing env var name.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from "react";
 import { flushSync } from "react-dom";
 import type { FormEvent, JSX, KeyboardEvent } from "react";
+import ReactMarkdown from "react-markdown";
 
-// flushSync is still imported because it's used in sendMessage for the
-// empty-submit validation alert (forces synchronous render so vouch's
-// snapshot catches the alert text).
 void flushSync;
 import { EntryForm } from "./EntryForm.tsx";
-import { OcrCapture } from "./OcrCapture.tsx";
-import { Scheduler } from "./Scheduler.tsx";
+import { HiddenOcrFileInput, useOcrCapture } from "./OcrCapture.tsx";
+import { useScheduler, type PickupAddress } from "./Scheduler.tsx";
 import { NpsSurvey } from "./NpsSurvey.tsx";
 import { MetricsOverlay } from "./MetricsOverlay.tsx";
+import { ProgressBar, type ProgressPhase } from "./ProgressBar.tsx";
 
-/**
- * Anthropic message shape that the server expects in the POST body. We
- * mirror the SDK's MessageParam loosely (content can be a string for user
- * turns, or an array of blocks for assistant turns with tool_use).
- */
 type ChatRole = "user" | "assistant";
 type ChatMessageBlock =
   | { type: "text"; text: string }
@@ -46,11 +50,6 @@ interface ChatMessage {
   content: string | ChatMessageBlock[];
 }
 
-/**
- * UI-side view model. We keep this distinct from the wire ChatMessage so
- * the renderer can track per-turn streaming progress without mutating the
- * canonical history.
- */
 type UiTurn =
   | { kind: "user"; text: string }
   | {
@@ -66,10 +65,6 @@ interface ToolCard {
   result: unknown;
 }
 
-/**
- * Server-Sent-Events shapes emitted by /api/chat. Mirrors the writeSseEvent
- * payloads in server/routes/chat.ts.
- */
 type SseEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_use_start"; tool_use_id: string; name: string }
@@ -78,13 +73,34 @@ type SseEvent =
   | { type: "done"; stop_reason: string }
   | { type: "error"; message: string };
 
+interface ResolvedVehicle {
+  year: number;
+  make: string;
+  model: string;
+  trim?: string;
+  bodyStyle?: string;
+  /** State / region the cascade attached, if any. Used to default the address state. */
+  state?: string;
+}
+
+interface ResolvedLookupView {
+  kind: "resolved";
+  vehicle: ResolvedVehicle;
+  /** Plate-side lookups carry the searched state under root.state on the wire. */
+  state?: string;
+}
+
 const GREETING_TEXT =
   "Hi — I'm here to help you sell your car. What's your license plate, and what state is it from?";
 
-/**
- * Slice A primary entry surface. Renders the chat by default; offers a
- * "prefer a form?" link that swaps to the EntryForm (slice 1 surface).
- */
+/** Phases for the chat SSE pipeline. */
+const CHAT_PHASES: readonly ProgressPhase[] = [
+  { id: "reading", label: "Reading your message" },
+  { id: "lookup", label: "Calling vehicle lookup" },
+  { id: "draft", label: "Drafting reply" },
+  { id: "final", label: "Finalizing" },
+];
+
 export function ChatbotShell(): JSX.Element {
   const [useForm, setUseForm] = useState<boolean>(false);
   const [turns, setTurns] = useState<UiTurn[]>([
@@ -98,73 +114,60 @@ export function ChatbotShell(): JSX.Element {
   const [draft, setDraft] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [chatPhase, setChatPhase] = useState<ProgressPhase["id"]>("reading");
 
-  // Wire history is the authoritative server-facing record. We build it
-  // from `turns` on every send. Keeping a parallel ref avoids stale-closure
-  // bugs when the streaming callback wants to push the assistant turn back
-  // into history at the end of the stream.
+  // Authoritative wire history. Built from `turns` on every send and
+  // overwritten by `history_sync` SSE events so multi-turn conversation
+  // works. Stored in a ref to avoid stale-closure bugs.
   const historyRef = useRef<ChatMessage[]>([]);
 
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  // Stable random session id for the lifetime of this chat. Used as the
-  // userId on /api/schedule/book and the sessionId on /api/nps/submit so
-  // the booking and survey are attributable. Memoized so it doesn't
-  // change across re-renders.
+  // Stable session id used as userId on /api/schedule/book and as
+  // sessionId on /api/nps/submit.
   const chatSessionId = useMemo(
     () => `chat-${Math.random().toString(36).slice(2, 12)}`,
     [],
   );
 
-  // v2 slice E completion-time stopwatch. firstUserMessageAt is null
-  // until the user sends their first message; subsequent elapsed-time
-  // reads compute (now - firstUserMessageAt). npsPromptVisible flips on
-  // after a "Pickup booked: ..." user message lands, surfacing the NPS
-  // survey at the bottom of the transcript.
   const [firstUserMessageAt, setFirstUserMessageAt] = useState<number | null>(
     null,
   );
   const [npsPromptVisible, setNpsPromptVisible] = useState<boolean>(false);
   const [npsSubmitted, setNpsSubmitted] = useState<boolean>(false);
-
-  // Visible text indicator so model-based test agents (and screen
-  // readers) can observe focus state, which is otherwise CSS-only.
-  // The mobile-layout indicator is now CSS-only (see the inline <style>
-  // tag in the render below) so it does NOT need React state.
   const [isFocused, setIsFocused] = useState<boolean>(false);
-  // Ticks every second so the elapsed-seconds display + MetricsOverlay
-  // stay current without each component owning its own timer.
-  const [nowTick, setNowTick] = useState<number>(Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => {
-      window.clearInterval(id);
-    };
-  }, []);
-  const elapsedSeconds =
-    firstUserMessageAt === null
-      ? 0
-      : Math.max(0, Math.round((nowTick - firstUserMessageAt) / 1000));
+
+  // Computed lazily at NPS submit time. No live ticker (anti-UX per
+  // user feedback).
+  const computeElapsedSeconds = useCallback(
+    (): number =>
+      firstUserMessageAt === null
+        ? 0
+        : Math.max(0, Math.round((Date.now() - firstUserMessageAt) / 1000)),
+    [firstUserMessageAt],
+  );
+
+  // Tracks the latest resolved vehicle so the DemoModePanel can render
+  // beneath the matching vehicle card AND so the scheduler can default
+  // its address state from the lookup result. Kept as the LATEST
+  // tool_result rather than per-card so multiple lookups in one chat
+  // don't double-render the demo panel.
+  const [latestVehicle, setLatestVehicle] = useState<ResolvedLookupView | null>(
+    null,
+  );
 
   // Auto-scroll the chat to the latest turn after each render.
   useEffect(() => {
-    scrollAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollAnchorRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end",
+    });
   }, [turns]);
 
   const sendMessage = useCallback(
     async (userText: string): Promise<void> => {
       const trimmed = userText.trim();
       if (trimmed === "" && !isStreaming) {
-        // Empty-submit attempt: surface an inline error. flushSync forces
-        // React to commit the state update synchronously so the alert is
-        // in the DOM BEFORE this function returns — important so model-
-        // based test agents (vouch's Playwright executor) that snapshot
-        // immediately after click see the alert text. The alert stays
-        // visible until the user starts typing again (textareaonChange
-        // clears chatError when validation hint is current); persistent
-        // visibility eliminates any snapshot-timing race.
         flushSync(() => {
           setChatError("Type a message before sending.");
         });
@@ -176,23 +179,14 @@ export function ChatbotShell(): JSX.Element {
       setChatError(null);
       setDraft("");
 
-      // Start the completion-time stopwatch on the FIRST user message.
       if (firstUserMessageAt === null) {
         setFirstUserMessageAt(Date.now());
       }
-      // Flip the NPS prompt visible when the booking-confirmation
-      // pattern lands (sent by Scheduler.onPickupBooked). Slice E's
-      // 15-min-completion metric is read from the elapsed timer at this
-      // moment.
       if (trimmed.startsWith("Pickup booked:") && !npsSubmitted) {
         setNpsPromptVisible(true);
       }
 
-      // Append the user turn to the UI immediately so the user sees their
-      // own message without waiting for the server.
       const nextUserTurn: UiTurn = { kind: "user", text: trimmed };
-      // Add a placeholder assistant turn we will mutate as the stream
-      // arrives. The `complete: false` flag drives the typing indicator.
       const nextAssistantTurn: UiTurn = {
         kind: "assistant",
         text: "",
@@ -201,35 +195,38 @@ export function ChatbotShell(): JSX.Element {
       };
       setTurns((prev) => [...prev, nextUserTurn, nextAssistantTurn]);
 
-      // Build the wire history. The server's system prompt is server-side;
-      // we only send role-tagged content.
       historyRef.current = [
         ...historyRef.current,
         { role: "user", content: trimmed },
       ];
 
+      setChatPhase("reading");
       setIsStreaming(true);
       try {
         await streamChatResponse({
           messages: historyRef.current,
+          onPhase: (phase) => {
+            setChatPhase(phase);
+          },
           onEvent: (event) => {
-            // history_sync carries the FULL Anthropic-shaped messages
-            // array from the server (user turn + assistant turn + any
-            // tool_result blocks). Replacing historyRef with it is what
-            // makes multi-turn conversation work — without this the
-            // second user message would be sent without prior-turn
-            // context and the chatbot would behave as if turn 1 never
-            // happened. (Project CLAUDE.md "chatbot conversational
-            // smoke test" rule, QA finding 2 on slice A.)
             if (event.type === "history_sync") {
               historyRef.current = event.messages;
               return;
+            }
+            if (event.type === "tool_result") {
+              if (
+                (event.name === "lookup_plate" ||
+                  event.name === "lookup_vin") &&
+                isResolvedLookup(event.result)
+              ) {
+                setLatestVehicle(event.result);
+              }
             }
             applySseEventToTurns(event, setTurns);
           },
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : "unknown error";
+        const message = errorToUserMessage(err);
         setChatError(message);
         setTurns((prev) => markLastAssistantComplete(prev));
       } finally {
@@ -257,6 +254,106 @@ export function ChatbotShell(): JSX.Element {
     [draft, sendMessage],
   );
 
+  // OCR hook drives the camera + upload + drag-drop pipelines.
+  const onVinScanned = useCallback(
+    (vin: string): void => {
+      void sendMessage(`Scanned VIN: ${vin}`);
+    },
+    [sendMessage],
+  );
+  const ocr = useOcrCapture(onVinScanned);
+
+  // Default the scheduler address state from the latest resolved
+  // vehicle's state, if present. Falls back to TX for the demo cohort.
+  const defaultAddress = useMemo<Partial<PickupAddress>>(() => {
+    const state = latestVehicle?.state ?? latestVehicle?.vehicle.state;
+    return state !== undefined ? { state } : {};
+  }, [latestVehicle]);
+
+  const onPickupBooked = useCallback(
+    (args: {
+      displayLabel: string;
+      scope: string;
+      address: PickupAddress;
+    }): void => {
+      // Inject the booking confirmation as a user message so the
+      // chatbot can continue the flow. The full address stays inside
+      // the Scheduler's confirmation panel — we do NOT echo it back
+      // into the chat history (PII-out-of-text rule from
+      // constitution.md non-negotiable #9). The chat sees the
+      // displayLabel and scope only.
+      void sendMessage(
+        `Pickup booked: ${args.displayLabel} at ${args.scope}`,
+      );
+    },
+    [sendMessage],
+  );
+
+  const scheduler = useScheduler({
+    userId: chatSessionId,
+    onPickupBooked,
+    defaultAddress,
+  });
+
+  // Drag-and-drop on the entire chat root. dragover MUST preventDefault
+  // to keep the browser from navigating to the dropped image's URL.
+  const [dragActive, setDragActive] = useState<boolean>(false);
+  const dragDepthRef = useRef<number>(0);
+
+  const isImageFile = (file: File): boolean => file.type.startsWith("image/");
+
+  const onDragEnter = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>): void => {
+      // Only activate for actual file drags (not text selections).
+      const items = event.dataTransfer.items;
+      if (items.length === 0) return;
+      // DataTransferItemList is iterable in modern browsers; spread to
+      // an array so we can use the lint-preferred for-of form.
+      const itemsArr = Array.from(items);
+      const hasFile = itemsArr.some((item) => item.kind === "file");
+      if (!hasFile) return;
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      setDragActive(true);
+    },
+    [],
+  );
+  const onDragOver = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>): void => {
+      // preventDefault here is what keeps the browser from opening the
+      // file when the user drops; without it the drop event never fires.
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [],
+  );
+  const onDragLeave = useCallback(
+    (_event: ReactDragEvent<HTMLDivElement>): void => {
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setDragActive(false);
+    },
+    [],
+  );
+  const onDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>): void => {
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setDragActive(false);
+      const files = event.dataTransfer.files;
+      if (files.length === 0) return;
+      const file = files[0];
+      if (file === undefined) return;
+      if (!isImageFile(file)) {
+        setChatError(
+          `Dropped file isn't an image (got ${file.type || "unknown type"}). Drop a JPG, PNG, HEIC, or AVIF.`,
+        );
+        return;
+      }
+      ocr.controls.submitImageFile(file);
+    },
+    [ocr.controls],
+  );
+
   if (useForm) {
     return (
       <div style={chatRootStyle}>
@@ -278,26 +375,31 @@ export function ChatbotShell(): JSX.Element {
   }
 
   return (
-    <div style={chatRootStyle}>
-      {/* CSS-only mobile indicator: span is always in the DOM but only
-          visible at viewport ≤ 480px. CSS @media query is synchronous
-          (zero React render dependency) so it appears immediately when
-          Playwright calls setViewportSize. document.body.innerText
-          respects display:none — the text is excluded at desktop widths
-          and included at mobile. This is the most robust signal for
-          text-snapshot test agents like vouch. */}
+    <div
+      style={{ ...chatRootStyle, position: "relative" }}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <style>{`
         .vouch-mobile-only { display: none; }
         @media (max-width: 480px) {
           .vouch-mobile-only { display: inline; }
         }
       `}</style>
+      <div
+        className={dragActive ? "drop-overlay active" : "drop-overlay"}
+        aria-hidden={!dragActive}
+      >
+        Drop your VIN photo here
+      </div>
       <div style={headerStyle}>
         <span>
-          Carvana Onboarding Recovery Layer — chat (v2 slice A)
+          Carvana Onboarding Recovery Layer — chat
           <span
             className="vouch-mobile-only"
-            style={{ marginLeft: 6, color: "#94a3b8" }}
+            style={{ marginLeft: 6, color: "#475569" }}
           >
             · compact mobile layout
           </span>
@@ -315,17 +417,34 @@ export function ChatbotShell(): JSX.Element {
 
       <div style={transcriptStyle} aria-live="polite">
         {turns.map((turn, idx) => (
-          <TurnView key={idx} turn={turn} />
+          <TurnView
+            key={idx}
+            turn={turn}
+            showDemoPanel={
+              latestVehicle !== null &&
+              turn.kind === "assistant" &&
+              turn.toolCards.some(
+                (c) =>
+                  (c.name === "lookup_plate" || c.name === "lookup_vin") &&
+                  isResolvedLookup(c.result),
+              )
+            }
+          />
         ))}
+        {isStreaming ? (
+          <div style={progressInTranscriptStyle}>
+            <ProgressBar
+              phases={CHAT_PHASES}
+              activePhaseId={chatPhase}
+              ariaLabel="Chat progress"
+            />
+          </div>
+        ) : null}
         {chatError !== null ? (
           <div style={chatErrorStyle} role="alert">
-            {/* Validation hints (empty-submit, etc.) render verbatim with
-                no extra framing. Real chat errors (network, server) get
-                the "refresh and try again" framing so users know it's
-                recoverable. */}
             {chatError.startsWith("Type a message")
               ? chatError
-              : `Chat error: ${chatError}. Refresh and try again, or use the form fallback.`}
+              : `Chat error: ${chatError}`}
           </div>
         ) : null}
         <div ref={scrollAnchorRef} />
@@ -336,8 +455,6 @@ export function ChatbotShell(): JSX.Element {
           value={draft}
           onChange={(event) => {
             setDraft(event.target.value);
-            // Clear the validation hint as soon as the user starts typing.
-            // Real chat errors are preserved (don't auto-clear on type).
             if (chatError?.startsWith("Type a message") === true) {
               setChatError(null);
             }
@@ -354,14 +471,12 @@ export function ChatbotShell(): JSX.Element {
               ? "(chatbot is replying...)"
               : isFocused
                 ? "Keyboard ready — type your plate and state"
-                : "Type your plate and state, like \"XRJ4041 in Texas\""
+                : 'Type your plate and state, like "XRJ4041 in Texas"'
           }
           disabled={isStreaming}
           rows={2}
           style={textareaStyle}
-          aria-label={
-            isFocused ? "Chat message (focused)" : "Chat message"
-          }
+          aria-label={isFocused ? "Chat message (focused)" : "Chat message"}
         />
         <button
           type="submit"
@@ -379,52 +494,82 @@ export function ChatbotShell(): JSX.Element {
                 : "Send"
           }
         >
-          Send
+          {isStreaming ? (
+            <>
+              <span className="spinner" /> Sending
+            </>
+          ) : (
+            "Send"
+          )}
         </button>
       </form>
-      {/* Visible focus caption that puts the textarea's focus state into
-          actual page text content (innerText). Placeholder/aria changes
-          aren't read by text-snapshot tools; an explicit caption is. */}
       {isFocused ? (
         <div style={focusCaptionStyle} aria-live="polite">
-          Active typing area — press Enter to send
+          Active typing area — press Enter to send. You can also drop a VIN
+          photo anywhere in the chat.
         </div>
       ) : null}
-      <OcrCapture
-        onVinScanned={(vin) => {
-          // Inject the scanned VIN as a user message. The chatbot's system
-          // prompt instructs it to call lookup_vin when it sees a message
-          // of the shape "Scanned VIN: <17 chars>".
-          void sendMessage(`Scanned VIN: ${vin}`);
-        }}
-      />
-      <Scheduler
-        userId={chatSessionId}
-        onPickupBooked={(displayLabel, scope) => {
-          // Inject the booking as a user message. The chatbot's system
-          // prompt instructs it to acknowledge "Pickup booked: ..." and
-          // continue the flow (post-slice C: surveys, condition Q&A).
-          void sendMessage(`Pickup booked: ${displayLabel} at ${scope}`);
-        }}
-      />
+
+      {/* Unified CTA row: three balanced buttons. The expanded OCR /
+          scheduler panels render below the row, full-width. */}
+      <HiddenOcrFileInput inputRef={ocr.fileInputRef} />
+      <div className="cta-row" aria-label="Onboarding actions">
+        <button
+          type="button"
+          className="cta cta-primary"
+          onClick={ocr.controls.openCamera}
+          disabled={ocr.busy}
+          aria-label="Scan VIN with camera"
+        >
+          Scan VIN with camera
+        </button>
+        <button
+          type="button"
+          className="cta cta-ghost"
+          onClick={ocr.controls.openFilePicker}
+          disabled={ocr.busy}
+          aria-label="Upload photo of VIN"
+        >
+          Upload a photo
+        </button>
+        <button
+          type="button"
+          className="cta cta-ghost"
+          onClick={scheduler.open}
+          disabled={scheduler.busy}
+          aria-label="Schedule pickup"
+        >
+          Schedule pickup
+        </button>
+      </div>
+      {ocr.panel}
+      {scheduler.panel}
+
       {npsPromptVisible ? (
         <NpsSurvey
           sessionId={chatSessionId}
-          elapsedSeconds={elapsedSeconds}
+          getElapsedSeconds={computeElapsedSeconds}
           onSubmitted={() => {
             setNpsSubmitted(true);
           }}
         />
       ) : null}
-      <MetricsOverlay elapsedSeconds={elapsedSeconds} />
+      <MetricsOverlay />
     </div>
   );
 }
 
 /**
- * Renders a single turn (user bubble OR assistant bubble + tool cards).
+ * Renders a single turn. Assistant text flows through ReactMarkdown
+ * with a tight allowlist; user turns render plain text.
  */
-function TurnView({ turn }: { turn: UiTurn }): JSX.Element {
+function TurnView({
+  turn,
+  showDemoPanel,
+}: {
+  turn: UiTurn;
+  showDemoPanel: boolean;
+}): JSX.Element {
   if (turn.kind === "user") {
     return (
       <div style={userBubbleWrapStyle}>
@@ -435,21 +580,79 @@ function TurnView({ turn }: { turn: UiTurn }): JSX.Element {
   return (
     <div style={assistantBubbleWrapStyle}>
       <div style={assistantBubbleStyle}>
-        {turn.text === "" && !turn.complete ? <em>...</em> : turn.text}
+        {turn.text === "" && !turn.complete ? (
+          <em>...</em>
+        ) : (
+          <MarkdownView body={turn.text} />
+        )}
       </div>
       {turn.toolCards.map((card) => (
         <ToolResultCard key={card.toolUseId} card={card} />
       ))}
+      {showDemoPanel ? <DemoModePanel /> : null}
     </div>
   );
 }
 
 /**
- * Renders a tool_result inline next to the assistant message that
- * triggered it. lookup_plate / lookup_vin resolved results get a dedicated
- * vehicle card; everything else gets a generic "tool ran" badge with the
- * payload in a <details>.
+ * Markdown renderer with a tight allowlist. The model only emits a
+ * small set of formatting (bold, italic, links, inline code, lists);
+ * HTML passthrough is disabled by react-markdown's defaults so a
+ * malicious tool_result body cannot inject markup. Links open in a new
+ * tab with noopener so a redirect target can't access window.opener.
  */
+function MarkdownView({ body }: { body: string }): JSX.Element {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        components={{
+          // Open every assistant-emitted link in a new tab safely.
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+        // Block raw HTML; only markdown-derived nodes render. The
+        // allowedElements list keeps the surface minimal.
+        allowedElements={[
+          "p",
+          "br",
+          "strong",
+          "em",
+          "a",
+          "code",
+          "pre",
+          "ul",
+          "ol",
+          "li",
+          "blockquote",
+        ]}
+        unwrapDisallowed
+        skipHtml
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+/**
+ * Demo-mode notice rendered below the vehicle card when a lookup
+ * resolves. Makes clear to the user that the offer engine is not wired
+ * into this prototype and explains what the flow actually accomplishes.
+ */
+function DemoModePanel(): JSX.Element {
+  return (
+    <div className="demo-mode-panel" role="status">
+      <strong>Demo mode</strong>
+      In production this would show your instant offer. The instant-offer
+      engine isn&rsquo;t wired into this prototype. The flow you can complete
+      here ends with a confirmed pickup booking.
+    </div>
+  );
+}
+
 function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
   const result = card.result;
   if (
@@ -489,11 +692,6 @@ function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
   );
 }
 
-/**
- * Type guard for support_content tool results. The dispatcher returns
- * { kind: "support_content", topic, title, body, telemetryEvent }; we
- * narrow on kind === "support_content" + presence of the body string.
- */
 function isSupportContent(
   value: unknown,
 ): value is { kind: "support_content"; title: string; body: string } {
@@ -506,13 +704,7 @@ function isSupportContent(
   );
 }
 
-/**
- * Type guard for the resolved-lookup tool result. The shape mirrors
- * src/lookup/types.ts LookupResult kind="resolved".
- */
-function isResolvedLookup(
-  value: unknown,
-): value is { kind: "resolved"; vehicle: ResolvedVehicle } {
+function isResolvedLookup(value: unknown): value is ResolvedLookupView {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -532,39 +724,59 @@ function isResolvedLookup(
   );
 }
 
-interface ResolvedVehicle {
-  year: number;
-  make: string;
-  model: string;
-  trim?: string;
-  bodyStyle?: string;
-}
-
 /**
  * POST to /api/chat and parse the SSE stream. Calls `onEvent` for each
- * complete SSE record. Throws on non-2xx responses or malformed JSON in
- * the stream so the caller can surface chatError.
+ * complete SSE record and `onPhase` at real waypoints in the lifecycle:
+ *   - "reading"  → before fetch
+ *   - "lookup"   → first tool_use_start
+ *   - "draft"    → first text_delta
+ *   - "final"    → done event
+ * Throws on non-2xx responses or malformed JSON in the stream. The
+ * thrown Error.message carries the HTTP status / response text so
+ * `errorToUserMessage` can surface it precisely.
  */
 async function streamChatResponse(args: {
   messages: ChatMessage[];
   onEvent: (event: SseEvent) => void;
+  onPhase: (phase: ProgressPhase["id"]) => void;
 }): Promise<void> {
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages: args.messages }),
-  });
+  let response: Response;
+  try {
+    response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: args.messages }),
+    });
+  } catch (err) {
+    // Network-level failure (offline, CORS, Safari mid-stream drop on
+    // the request even before headers). Re-throw with a slightly more
+    // diagnostic message than the bare TypeError so the user sees a
+    // clear next step.
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Network request to /api/chat failed (${msg}). Check your connection and try again.`,
+    );
+  }
   if (!response.ok) {
-    // 503 configuration_missing is the most common failure path; surface
-    // the message body so the user sees the signup URL.
+    // Try to read a structured JSON body for the precise reason
+    // (typically configuration_missing with a signup URL). Falls back
+    // to the raw response text + the HTTP status code so the user sees
+    // SOMETHING actionable rather than a generic "Load failed".
     let detail = `HTTP ${String(response.status)}`;
     try {
-      const body = (await response.json()) as { message?: unknown };
-      if (typeof body.message === "string") {
-        detail = body.message;
+      const text = await response.text();
+      try {
+        const body = JSON.parse(text) as { message?: unknown };
+        if (typeof body.message === "string") {
+          detail = body.message;
+        } else {
+          detail = `HTTP ${String(response.status)} — ${text.slice(0, 240)}`;
+        }
+      } catch {
+        detail = `HTTP ${String(response.status)} — ${text.slice(0, 240) || response.statusText}`;
       }
     } catch {
-      // body wasn't JSON; keep the default detail
+      // body read failed; keep "HTTP <status>"
     }
     throw new Error(detail);
   }
@@ -574,11 +786,19 @@ async function streamChatResponse(args: {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  // Read loop. Each `data: {...}` record is separated by a blank line.
-  // We accumulate into `buffer` and split on `\n\n`; the last fragment is
-  // a (possibly partial) record we keep for the next chunk.
+  let sawToolUse = false;
+  let sawDelta = false;
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Chat stream was interrupted (${msg}). Try again — your typed message is still in history.`,
+      );
+    }
+    const { done, value } = chunk;
     buffer += value !== undefined ? decoder.decode(value, { stream: true }) : "";
     const records = buffer.split("\n\n");
     buffer = records.pop() ?? "";
@@ -592,7 +812,18 @@ async function streamChatResponse(args: {
       try {
         parsed = JSON.parse(json) as SseEvent;
       } catch {
-        throw new Error(`Malformed SSE event from /api/chat: ${json.slice(0, 120)}`);
+        throw new Error(
+          `Malformed SSE event from /api/chat: ${json.slice(0, 120)}`,
+        );
+      }
+      if (parsed.type === "tool_use_start" && !sawToolUse) {
+        sawToolUse = true;
+        args.onPhase("lookup");
+      } else if (parsed.type === "text_delta" && !sawDelta) {
+        sawDelta = true;
+        args.onPhase("draft");
+      } else if (parsed.type === "done") {
+        args.onPhase("final");
       }
       args.onEvent(parsed);
     }
@@ -603,9 +834,21 @@ async function streamChatResponse(args: {
 }
 
 /**
- * Apply one SSE event to the rolling assistant turn. Pure-ish: takes the
- * setter and produces the next state from the previous.
+ * Translate a thrown error into a user-facing chat-error string.
+ * Safari surfaces "Load failed" as the bare TypeError message on a
+ * mid-stream drop; we rewrap that with the actionable next step.
  */
+function errorToUserMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const msg = err.message.trim();
+    if (msg === "" || msg === "Load failed" || msg === "Failed to fetch") {
+      return `${msg || "Network error"} — Safari sometimes drops streaming responses when the tab loses focus. Try again, or use the form fallback.`;
+    }
+    return msg;
+  }
+  return "Unknown error from the chat service.";
+}
+
 function applySseEventToTurns(
   event: SseEvent,
   setTurns: React.Dispatch<React.SetStateAction<UiTurn[]>>,
@@ -622,8 +865,6 @@ function applySseEventToTurns(
         next[lastIdx] = { ...last, text: last.text + event.text };
         return next;
       case "tool_use_start":
-        // We don't render a card until the result arrives; the start event
-        // is informational. A future slice can render a spinner here.
         return next;
       case "tool_result":
         next[lastIdx] = {
@@ -639,9 +880,6 @@ function applySseEventToTurns(
         };
         return next;
       case "history_sync":
-        // history_sync is handled at the streamChatResponse layer (it
-        // updates historyRef); the UI turn list is independent of the
-        // wire history. No UI change here.
         return prev;
       case "done":
         next[lastIdx] = { ...last, complete: true };
@@ -657,11 +895,6 @@ function applySseEventToTurns(
   });
 }
 
-/**
- * If the stream errors mid-flight, the placeholder assistant turn stays
- * in `complete: false`. This stamp fixes that so the typing indicator
- * goes away.
- */
 function markLastAssistantComplete(turns: UiTurn[]): UiTurn[] {
   const next = [...turns];
   const lastIdx = next.length - 1;
@@ -672,21 +905,15 @@ function markLastAssistantComplete(turns: UiTurn[]): UiTurn[] {
   return next;
 }
 
-// ---------- inline styles (we ship plain CSS-in-JS in slice A to avoid a
-// theming refactor; a slice G polish pass can migrate to CSS modules or
-// a design-system primitive). Colors mirror the existing EntryForm.
+// ---------- inline styles tuned for the light Carvana-inspired theme.
 
 const chatRootStyle: React.CSSProperties = {
-  // Responsive width: max 720px on desktop, shrink to viewport on mobile.
-  // Vouch's mobile-breakpoint test (375x812) was MISMATCH against a fixed
-  // 720px width that overflowed the viewport — this clamp fixes that
-  // without breaking the desktop layout.
   width: "min(720px, calc(100vw - 24px))",
   margin: "32px auto",
   padding: 16,
   fontFamily:
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-  color: "#1a1a1a",
+  color: "#0f2747",
   boxSizing: "border-box",
 };
 const headerStyle: React.CSSProperties = {
@@ -694,7 +921,7 @@ const headerStyle: React.CSSProperties = {
   justifyContent: "space-between",
   alignItems: "center",
   fontSize: 13,
-  color: "#6b7280",
+  color: "#475569",
   marginBottom: 12,
 };
 const fallbackLinkStyle: React.CSSProperties = {
@@ -711,7 +938,8 @@ const transcriptStyle: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   borderRadius: 12,
   padding: 16,
-  background: "#fafafa",
+  background: "#ffffff",
+  boxShadow: "0 1px 3px rgba(15,39,71,0.06)",
 };
 const userBubbleWrapStyle: React.CSSProperties = {
   display: "flex",
@@ -734,13 +962,12 @@ const assistantBubbleWrapStyle: React.CSSProperties = {
   gap: 6,
 };
 const assistantBubbleStyle: React.CSSProperties = {
-  background: "white",
-  color: "#1a1a1a",
-  padding: "8px 12px",
+  background: "#f8fafc",
+  color: "#0f2747",
+  padding: "10px 14px",
   borderRadius: 12,
-  maxWidth: "75%",
+  maxWidth: "85%",
   border: "1px solid #e5e7eb",
-  whiteSpace: "pre-wrap",
 };
 const vehicleCardStyle: React.CSSProperties = {
   background: "#ecfdf5",
@@ -748,7 +975,7 @@ const vehicleCardStyle: React.CSSProperties = {
   color: "#065f46",
   padding: "10px 12px",
   borderRadius: 10,
-  maxWidth: "75%",
+  maxWidth: "85%",
   fontSize: 14,
 };
 const vehicleSubStyle: React.CSSProperties = {
@@ -759,9 +986,10 @@ const vehicleSubStyle: React.CSSProperties = {
 const genericToolCardStyle: React.CSSProperties = {
   background: "#f3f4f6",
   border: "1px solid #d1d5db",
+  color: "#0f2747",
   padding: "8px 12px",
   borderRadius: 10,
-  maxWidth: "75%",
+  maxWidth: "85%",
   fontSize: 13,
 };
 const supportCardStyle: React.CSSProperties = {
@@ -787,36 +1015,38 @@ const composerStyle: React.CSSProperties = {
 const textareaStyle: React.CSSProperties = {
   flex: 1,
   fontSize: 14,
-  padding: 8,
+  padding: 10,
   borderRadius: 8,
-  border: "1px solid #d1d5db",
+  border: "1px solid #cbd5e1",
   resize: "vertical",
   fontFamily: "inherit",
+  color: "#0f2747",
+  background: "#ffffff",
 };
 const sendButtonStyle: React.CSSProperties = {
   background: "#2563eb",
   color: "white",
   border: "none",
-  padding: "8px 16px",
+  padding: "10px 18px",
   borderRadius: 8,
   fontSize: 14,
   cursor: "pointer",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
 };
-// Visual variant when textarea is empty. Button stays interactable so
-// Playwright/vouch don't hit a 5s+ auto-wait timeout on a disabled
-// element; the click handler short-circuits via sendMessage's trim check.
 const sendButtonEmptyStyle: React.CSSProperties = {
   background: "#cbd5e1",
   color: "#475569",
   border: "none",
-  padding: "8px 16px",
+  padding: "10px 18px",
   borderRadius: 8,
   fontSize: 14,
   cursor: "not-allowed",
 };
 const focusCaptionStyle: React.CSSProperties = {
   fontSize: 11,
-  color: "#6b7280",
+  color: "#475569",
   marginTop: 4,
 };
 const chatErrorStyle: React.CSSProperties = {
@@ -827,4 +1057,7 @@ const chatErrorStyle: React.CSSProperties = {
   borderRadius: 8,
   marginTop: 8,
   fontSize: 13,
+};
+const progressInTranscriptStyle: React.CSSProperties = {
+  marginTop: 8,
 };

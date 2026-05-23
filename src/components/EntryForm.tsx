@@ -181,6 +181,10 @@ export function EntryForm(): JSX.Element {
                 autoCapitalize="characters"
                 required
               />
+              {/* Empty hint preserves the 3-row grid alignment between the
+                  plate and state columns (label / input / hint each share
+                  a row). */}
+              <small className="hint" aria-hidden="true">&nbsp;</small>
             </label>
           </div>
         ) : (
@@ -321,8 +325,9 @@ function DegradationPanel(props: {
           <ul>
             <li>Switch to VIN entry (top tab) and try with your 17-character VIN.</li>
             <li>
-              Snap a photo of your VIN sticker or registration card (coming in
-              slice 4 of this prototype).
+              Snap a photo of your VIN sticker or registration card from the
+              chat surface — the &ldquo;Scan VIN with camera&rdquo; button
+              below the conversation runs the same OCR pipeline.
             </li>
             <li>
               <button type="button" className="link" onClick={onRetry}>

@@ -1,17 +1,26 @@
 :root {
-  color-scheme: dark;
-  --bg: #0a0e1a;
-  --panel: #1a2236;
-  --panel-2: #1e293b;
-  --accent: #6366f1;
-  --accent-warm: #d4a373;
-  --good: #34d399;
-  --warn: #fbbf24;
-  --bad: #f87171;
-  --info: #60a5fa;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --border: #2d3748;
+  /* Bright, trustworthy palette inspired by Carvana's brand: warm off-white
+     background, white surfaces, navy text, sky-blue primary. Variable names
+     are kept stable so component-level CSS-in-JS that references --bg /
+     --panel / etc. picks up the new colors without per-component edits. */
+  color-scheme: light;
+  --bg: #fbfaf7;            /* warm off-white background */
+  --panel: #ffffff;         /* white surfaces / cards */
+  --panel-2: #ffffff;       /* second-tier surface (cards-on-cards) */
+  --panel-border: #e5e7eb;  /* hairline border on panels */
+  --panel-shadow: 0 1px 3px rgba(15, 39, 71, 0.06);
+  --accent: #2563eb;        /* Carvana sky blue (primary brand) */
+  --accent-hover: #1e40af;  /* darker hover */
+  --accent-warm: #d97706;   /* warm amber for warning headers */
+  --good: #059669;          /* success */
+  --warn: #d97706;          /* warning */
+  --bad: #dc2626;           /* error (warm coral) */
+  --info: #2563eb;          /* informational */
+  --text: #0f2747;          /* navy text primary */
+  --muted: #475569;         /* slate text secondary */
+  --border: #e5e7eb;        /* hairline border */
+  --demo-bg: #fef3c7;       /* warm sand for demo-mode panel */
+  --demo-text: #92400e;     /* legible-on-sand body text */
 
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   line-height: 1.5;
@@ -29,7 +38,7 @@ body {
 }
 
 a { color: var(--accent); }
-a:hover { text-decoration: underline; }
+a:hover { text-decoration: underline; color: var(--accent-hover); }
 
 button.link {
   background: none;
@@ -39,12 +48,13 @@ button.link {
   padding: 0;
   font: inherit;
 }
-button.link:hover { text-decoration: underline; }
+button.link:hover { text-decoration: underline; color: var(--accent-hover); }
 
 code, pre {
   font-family: ui-monospace, "SF Mono", monospace;
   font-size: 0.9em;
-  background: var(--bg);
+  background: #f1f5f9;
+  color: var(--text);
   padding: 2px 6px;
   border-radius: 4px;
   border: 1px solid var(--border);
@@ -66,6 +76,7 @@ pre {
   font-size: 32px;
   margin: 0 0 12px;
   line-height: 1.2;
+  color: var(--text);
 }
 
 .lede {
@@ -97,17 +108,22 @@ pre {
 
 .entry-form {
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 24px;
   margin-bottom: 24px;
+  box-shadow: var(--panel-shadow);
 }
 
+/* License-plate row alignment: a fixed 100px column for STATE keeps the
+   label, input, and helper rows perfectly co-baseline with the plate
+   column. align-items: stretch lets each field own its own row layout
+   without the auto column collapsing vertically. */
 .field-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr 100px;
   gap: 16px;
-  align-items: end;
+  align-items: stretch;
 }
 .field {
   display: flex;
@@ -121,7 +137,7 @@ pre {
   letter-spacing: 0.5px;
 }
 .field input {
-  background: var(--bg);
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -133,12 +149,17 @@ pre {
 .field input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 .hint {
   font-size: 12px;
   color: var(--muted);
+  /* min-height keeps the hint row aligned across columns even when one
+     column's hint is empty (e.g. STATE has no hint of its own). */
+  min-height: 16px;
+  display: block;
 }
-.state-field input { width: 80px; text-align: center; }
+.state-field input { width: 100%; text-align: center; }
 
 .submit {
   margin-top: 20px;
@@ -154,28 +175,31 @@ pre {
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
 }
-.submit:hover:not(:disabled) { background: #4f46e5; }
+.submit:hover:not(:disabled) { background: var(--accent-hover); }
 .submit:disabled { opacity: 0.6; cursor: wait; }
 
 .result {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 24px;
   margin-bottom: 16px;
   border-left-width: 4px;
+  color: var(--text);
+  box-shadow: var(--panel-shadow);
 }
 .result h2 {
   margin: 0 0 12px;
   font-size: 20px;
+  color: var(--text);
 }
-.result p { margin: 8px 0; }
-.result ul { margin: 8px 0; padding-left: 22px; }
+.result p { margin: 8px 0; color: var(--text); }
+.result ul { margin: 8px 0; padding-left: 22px; color: var(--text); }
 .result li { margin: 6px 0; }
 .result details { margin-top: 12px; }
 .result summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 
-.result-loading { border-left-color: var(--info); color: var(--muted); }
+.result-loading { border-left-color: var(--info); }
 .result-ok { border-left-color: var(--good); }
 .result-ok h2 { color: var(--good); }
 .result-not-found { border-left-color: var(--warn); }
@@ -189,6 +213,25 @@ pre {
 .result-warning { border-left-color: var(--accent-warm); }
 .result-warning h2 { color: var(--accent-warm); }
 
+/* Demo-mode panel: warm sand background with high-contrast amber text.
+   Used after the vehicle resolves to make clear that the offer engine is
+   not wired into this prototype. */
+.demo-mode-panel {
+  margin: 12px 0 0;
+  background: var(--demo-bg);
+  color: var(--demo-text);
+  border: 1px solid #f59e0b;
+  border-left-width: 4px;
+  border-radius: 12px;
+  padding: 16px 18px;
+  box-shadow: var(--panel-shadow);
+}
+.demo-mode-panel strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--demo-text);
+}
+
 .muted { color: var(--muted); font-size: 14px; }
 
 .entry-footer {
@@ -199,3 +242,119 @@ pre {
 }
 .entry-footer a { color: var(--muted); }
 .entry-footer a:hover { color: var(--accent); }
+
+/* Unified CTA row — three CTAs (Scan / Upload / Schedule) sit
+   side-by-side on desktop, stack on mobile. Each CTA takes equal
+   width via flex:1 1 0 so the row is visually balanced regardless of
+   label length. */
+.cta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+@media (min-width: 600px) {
+  .cta-row {
+    flex-direction: row;
+  }
+}
+.cta {
+  flex: 1 1 0;
+  background: var(--accent);
+  color: white;
+  border: 1px solid var(--accent);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.cta:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.cta:disabled { opacity: 0.55; cursor: not-allowed; }
+.cta-primary { /* default */ }
+.cta-ghost {
+  background: var(--panel);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.cta-ghost:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Drag-and-drop overlay covering the whole chat surface. Active class
+   is toggled from React when a dragenter fires. */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 2px dashed transparent;
+  border-radius: 12px;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: transparent;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  z-index: 3;
+}
+.drop-overlay.active {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* CSS-only spinner used inline for sub-1s async indicators. */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spinner-rotate 0.7s linear infinite;
+  vertical-align: -2px;
+}
+.spinner.spinner-lg {
+  width: 18px;
+  height: 18px;
+  border-width: 2.5px;
+}
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Lightweight progress bar with named phases. Real waypoints in the chat /
+   OCR / scheduling pipelines drive the active phase, not a wall-clock
+   timer. */
+.progress-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.progress-bar-track {
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  height: 6px;
+}
+.progress-bar-fill {
+  background: var(--accent);
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease-out;
+}
+.progress-bar-label {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+}
