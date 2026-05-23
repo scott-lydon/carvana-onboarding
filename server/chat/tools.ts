@@ -184,13 +184,23 @@ export async function dispatchTool(
         },
       };
     case "schedule_pickup":
+      // Slice C reality: the server cannot pick a slot on the user's
+      // behalf. The Scheduler component (visible in the chat composer)
+      // lets the user pick. When schedule_pickup is called, we return
+      // user_action_required so the chatbot tells the user to tap the
+      // Schedule button. The booking confirmation comes back as a
+      // "Pickup booked: ..." user message.
       return {
         toolName,
         toolUseId,
         result: {
-          kind: "not_wired",
-          slice: "C",
-          note: "Pickup scheduling wires up in slice C.",
+          kind: "user_action_required",
+          action: "tap_scheduler_button",
+          note:
+            "Tell the user there's a Schedule pickup button below the chat composer. " +
+            "When they tap it, a calendar grid shows the next 14 days of available slots. " +
+            "The confirmed booking will appear as a new user message of the shape " +
+            "'Pickup booked: <displayLabel> at <scope>'.",
         },
       };
     case "get_support_content":

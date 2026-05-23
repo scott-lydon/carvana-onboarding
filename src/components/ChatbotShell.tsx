@@ -17,10 +17,11 @@
  * Pre-bake the greeting client-side so the first paint is instant — the
  * server isn't called until the user sends their first message.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, JSX, KeyboardEvent } from "react";
 import { EntryForm } from "./EntryForm.tsx";
 import { OcrCapture } from "./OcrCapture.tsx";
+import { Scheduler } from "./Scheduler.tsx";
 
 /**
  * Anthropic message shape that the server expects in the POST body. We
@@ -97,6 +98,14 @@ export function ChatbotShell(): JSX.Element {
   const historyRef = useRef<ChatMessage[]>([]);
 
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  // Stable random session id for the lifetime of this chat. Used as the
+  // userId on /api/schedule/book so the booking is attributable. Memoized
+  // so it doesn't change across re-renders.
+  const chatSessionId = useMemo(
+    () => `chat-${Math.random().toString(36).slice(2, 12)}`,
+    [],
+  );
 
   // Auto-scroll the chat to the latest turn after each render.
   useEffect(() => {
@@ -259,6 +268,15 @@ export function ChatbotShell(): JSX.Element {
           // prompt instructs it to call lookup_vin when it sees a message
           // of the shape "Scanned VIN: <17 chars>".
           void sendMessage(`Scanned VIN: ${vin}`);
+        }}
+      />
+      <Scheduler
+        userId={chatSessionId}
+        onPickupBooked={(displayLabel, scope) => {
+          // Inject the booking as a user message. The chatbot's system
+          // prompt instructs it to acknowledge "Pickup booked: ..." and
+          // continue the flow (post-slice C: surveys, condition Q&A).
+          void sendMessage(`Pickup booked: ${displayLabel} at ${scope}`);
         }}
       />
     </div>

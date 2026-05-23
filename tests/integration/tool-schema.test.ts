@@ -44,22 +44,28 @@ describe("CAT-17: chat tool-schema integrity", () => {
     expect(result.action).toBe("tap_camera_button");
   });
 
-  it("schedule_pickup and get_support_content still return not_wired in slice B", async () => {
-    for (const toolName of ["schedule_pickup", "get_support_content"]) {
-      const inputByTool: Record<string, unknown> = {
-        schedule_pickup: { zip: "78701" },
-        get_support_content: { topic: "data_privacy" },
-      };
-      const dispatched = await dispatchTool(
-        toolName,
-        "tool_use_id_y",
-        inputByTool[toolName],
-        undefined,
-      );
-      const result = dispatched.result as Record<string, unknown>;
-      expect(result.kind).toBe("not_wired");
-      expect(typeof result.slice).toBe("string");
-    }
+  it("schedule_pickup returns user_action_required (slice C reality: server doesn't pick the slot)", async () => {
+    const dispatched = await dispatchTool(
+      "schedule_pickup",
+      "tool_use_id_sched",
+      { zip: "78701" },
+      undefined,
+    );
+    const result = dispatched.result as Record<string, unknown>;
+    expect(result.kind).toBe("user_action_required");
+    expect(result.action).toBe("tap_scheduler_button");
+  });
+
+  it("get_support_content still returns not_wired in slice C (lands in slice D)", async () => {
+    const dispatched = await dispatchTool(
+      "get_support_content",
+      "tool_use_id_sc",
+      { topic: "data_privacy" },
+      undefined,
+    );
+    const result = dispatched.result as Record<string, unknown>;
+    expect(result.kind).toBe("not_wired");
+    expect(typeof result.slice).toBe("string");
   });
 
   it("lookup_plate without a cascade returns configuration_missing", async () => {
