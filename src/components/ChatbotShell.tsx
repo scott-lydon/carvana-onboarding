@@ -131,14 +131,19 @@ export function ChatbotShell(): JSX.Element {
   const [isFocused, setIsFocused] = useState<boolean>(false);
   const [isMobileViewport, setIsMobileViewport] = useState<boolean>(false);
   useEffect(() => {
-    // Listen to BOTH matchMedia change AND window resize. Playwright's
-    // setViewportSize fires window 'resize' reliably; matchMedia 'change'
-    // is the cleaner signal but doesn't always fire in headless. Belt
-    // and suspenders so model-based test agents see the state update.
+    // Listen to BOTH matchMedia change AND window resize. flushSync
+    // forces React to commit the state update synchronously inside the
+    // event handler so the indicator is in the DOM BEFORE the event
+    // handler returns. Without this, model-based test agents that
+    // snapshot immediately after `await page.setViewportSize(...)` see
+    // the OLD render because React's re-render is async/scheduled.
     const update = (): void => {
-      setIsMobileViewport(window.innerWidth <= 480);
+      flushSync(() => {
+        setIsMobileViewport(window.innerWidth <= 480);
+      });
     };
-    update();
+    // Initial check (no flushSync needed during mount).
+    setIsMobileViewport(window.innerWidth <= 480);
     window.addEventListener("resize", update);
     const mq = window.matchMedia("(max-width: 480px)");
     mq.addEventListener("change", update);
