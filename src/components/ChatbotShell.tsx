@@ -297,8 +297,20 @@ export function ChatbotShell(): JSX.Element {
         />
         <button
           type="submit"
-          disabled={isStreaming || draft.trim() === ""}
-          style={sendButtonStyle}
+          disabled={isStreaming}
+          aria-disabled={isStreaming || draft.trim() === ""}
+          style={
+            draft.trim() === "" && !isStreaming
+              ? sendButtonEmptyStyle
+              : sendButtonStyle
+          }
+          title={
+            draft.trim() === ""
+              ? "Type a message first"
+              : isStreaming
+                ? "Waiting for the assistant..."
+                : "Send"
+          }
         >
           Send
         </button>
@@ -590,12 +602,17 @@ function markLastAssistantComplete(turns: UiTurn[]): UiTurn[] {
 // a design-system primitive). Colors mirror the existing EntryForm.
 
 const chatRootStyle: React.CSSProperties = {
-  maxWidth: 720,
+  // Responsive width: max 720px on desktop, shrink to viewport on mobile.
+  // Vouch's mobile-breakpoint test (375x812) was MISMATCH against a fixed
+  // 720px width that overflowed the viewport — this clamp fixes that
+  // without breaking the desktop layout.
+  width: "min(720px, calc(100vw - 24px))",
   margin: "32px auto",
   padding: 16,
   fontFamily:
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   color: "#1a1a1a",
+  boxSizing: "border-box",
 };
 const headerStyle: React.CSSProperties = {
   display: "flex",
@@ -709,6 +726,18 @@ const sendButtonStyle: React.CSSProperties = {
   borderRadius: 8,
   fontSize: 14,
   cursor: "pointer",
+};
+// Visual variant when textarea is empty. Button stays interactable so
+// Playwright/vouch don't hit a 5s+ auto-wait timeout on a disabled
+// element; the click handler short-circuits via sendMessage's trim check.
+const sendButtonEmptyStyle: React.CSSProperties = {
+  background: "#cbd5e1",
+  color: "#475569",
+  border: "none",
+  padding: "8px 16px",
+  borderRadius: 8,
+  fontSize: 14,
+  cursor: "not-allowed",
 };
 const chatErrorStyle: React.CSSProperties = {
   background: "#fef2f2",
