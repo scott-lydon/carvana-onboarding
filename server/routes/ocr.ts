@@ -1,44 +1,31 @@
 /**
  * /api/ocr/recognize — Claude vision OCR for VIN sticker, registration
- * card, insurance card, and driver license (v2 slice B).
+ * card, insurance card, and driver license.
  *
- * Replaces the slice-1 plan for Google Cloud Vision with a Claude vision
- * call to the same Anthropic API surface as /api/chat. One vendor, one
- * billing relationship, one secret. The Claude vision model handles both
- * the "extract a 17-char VIN" case and the "read this registration card
- * and pull the VIN field" case without any vendor-specific configuration.
+ * Request shape (POST application/json):
+ *   { image: <base64 image bytes, no data: prefix>,
+ *     mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp" |
+ *                "image/heic" | "image/heif" | "image/avif" |
+ *                "image/bmp"  | "image/tiff",
+ *     target: "vin_sticker" | "registration_card" | "insurance_card" | "driver_license" }
  *
- * Request shape: POST application/json
- *   { image: <base64-encoded image bytes>, target: <VIN | registration_card | ...> }
+ * Response shape (200 application/json):
+ *   { kind: "resolved" | "not_found" | "low_confidence",
+ *     vin?, confidence?, reason? }
  *
- * Response shape: 200 application/json
- *   {
- *     kind: "resolved" | "not_found" | "low_confidence",
- *     vin?: string,         // present if kind === "resolved"
- *     confidence?: number,  // 0..1, present if kind === "resolved" | "low_confidence"
- *     reason?: string,      // present if kind === "not_found" | "low_confidence"
- *   }
+ * Anthropic vision only accepts a small subset (jpeg/png/gif/webp). For
+ * any other supported input (HEIC from iPhone, AVIF from Android, BMP /
+ * TIFF legacy) we transcode to JPEG via `sharp` before the API call.
  *
- * The 503 configuration_missing path mirrors /api/chat: same ANTHROPIC_API_KEY
- * env var, same signup URL embedded in the message body. This is the
- * "every failure case throws a clear, comprehensive, specific error" rule.
- *
- * Why "extract" instead of "OCR everything": Claude vision is asked for a
- * single typed value (the 17-char VIN) so the response is parseable. We
- * could also ask for a full document transcription but the chatbot only
- * needs the VIN to route to lookup_vin, so we keep the prompt tight.
+ * Every failure case throws a CLEAR, SPECIFIC error message naming the
+ * failed step + expected vs received values + a fix.
  */
 import type { Request, Response } from "express";
 import Anthropic from "@anthropic-ai/sdk";
+import sharp from "sharp";
 
 const VISION_MODEL = "claude-sonnet-4-5";
 const VISION_MAX_TOKENS = 256;
-
-/**
- * 17-character VIN validator. Real VINs never include I/O/Q and are
- * exactly 17 characters. Matches the same rule the slice-1 Vin domain
- * primitive enforces (see src/lookup/types.ts).
- */
 const VIN_PATTERN = /^[A-HJ-NPR-Z0-9]{17}$/;
 
 type OcrTarget =
@@ -60,10 +47,48 @@ const TARGET_PROMPTS: Record<OcrTarget, string> = {
     "This image is a vehicle insurance card. Find the 17-character VIN. " +
     "Reply with the 17 characters and nothing else. If not found, reply NOT_FOUND.",
   driver_license:
-    "This image is a US driver license. (Slice B note: VIN is not on a driver " +
-    "license. This target is reserved for slice E's identity-verification flow.) " +
-    "Reply NOT_FOUND.",
+    "This image is a US driver license. VIN is not on a driver license. Reply NOT_FOUND.",
 };
+
+/**
+ * Accept list at the server boundary. Mirrors what the client picker
+ * advertises in <input accept>. Anything else is rejected with a
+ * format_error naming the actual received MIME and the accept list.
+ */
+type AcceptedMediaType =
+  | "image/jpeg"
+  | "image/png"
+  | "image/gif"
+  | "image/webp"
+  | "image/heic"
+  | "image/heif"
+  | "image/avif"
+  | "image/bmp"
+  | "image/tiff";
+
+const ACCEPTED: readonly AcceptedMediaType[] = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "image/avif",
+  "image/bmp",
+  "image/tiff",
+];
+
+/**
+ * Anthropic vision only accepts these natively. Everything else gets
+ * transcoded to JPEG via sharp before the call.
+ */
+type AnthropicMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+const ANTHROPIC_NATIVE: readonly AnthropicMediaType[] = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+];
 
 export function makeOcrHandler(
   apiKey: string | undefined,
@@ -106,13 +131,44 @@ export function makeOcrHandler(
       });
       return;
     }
-    if (typeof mediaTypeInput !== "string" || !isSupportedMediaType(mediaTypeInput)) {
+    if (typeof mediaTypeInput !== "string" || !isAcceptedMediaType(mediaTypeInput)) {
       sendJsonError(res, 400, {
         kind: "format_error",
         field: "mediaType",
-        reason: "mediaType must be one of: image/png, image/jpeg, image/gif, image/webp",
+        reason: `mediaType must be one of: ${ACCEPTED.join(", ")}`,
       });
       return;
+    }
+
+    // Transcode anything Anthropic vision can't handle natively.
+    let payloadData: string;
+    let payloadMediaType: AnthropicMediaType;
+    if (isAnthropicNative(mediaTypeInput)) {
+      payloadData = imageInput;
+      payloadMediaType = mediaTypeInput;
+    } else {
+      try {
+        const buffer = Buffer.from(imageInput, "base64");
+        const converted = await sharp(buffer)
+          .rotate()             // honor EXIF orientation
+          .jpeg({ quality: 88 }) // good vision quality, modest file size
+          .toBuffer();
+        payloadData = converted.toString("base64");
+        payloadMediaType = "image/jpeg";
+      } catch (err) {
+        console.error(
+          `[ocr] failed to transcode ${mediaTypeInput} → image/jpeg — investigate:`,
+          err,
+        );
+        sendJsonError(res, 400, {
+          kind: "format_error",
+          field: "image",
+          reason:
+            `Could not convert ${mediaTypeInput} to a vision-supported format. ` +
+            `Take a fresh photo or save as JPG/PNG and try again.`,
+        });
+        return;
+      }
     }
 
     try {
@@ -127,8 +183,8 @@ export function makeOcrHandler(
                 type: "image",
                 source: {
                   type: "base64",
-                  media_type: mediaTypeInput,
-                  data: imageInput,
+                  media_type: payloadMediaType,
+                  data: payloadData,
                 },
               },
               {
@@ -149,9 +205,6 @@ export function makeOcrHandler(
         });
         return;
       }
-      // Extract the first 17-char alphanumeric run. The vision model may
-      // include surrounding whitespace or punctuation; this regex pulls
-      // the literal VIN out cleanly.
       const match = /[A-HJ-NPR-Z0-9]{17}/.exec(trimmed);
       if (match === null || !VIN_PATTERN.test(match[0])) {
         res.status(200).json({
@@ -189,26 +242,24 @@ function isOcrTarget(value: string): value is OcrTarget {
   );
 }
 
-type SupportedMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
-
-function isSupportedMediaType(value: string): value is SupportedMediaType {
-  return (
-    value === "image/png" ||
-    value === "image/jpeg" ||
-    value === "image/gif" ||
-    value === "image/webp"
-  );
+function isAcceptedMediaType(value: string): value is AcceptedMediaType {
+  return (ACCEPTED as readonly string[]).includes(value);
 }
 
-/**
- * The Anthropic Messages API response.content is a union of TextBlock |
- * ToolUseBlock | ThinkingBlock | ServerToolUseBlock | etc. For OCR we only
- * care about text. Concatenate all text-typed blocks (usually just one).
- */
+function isAnthropicNative(
+  value: AcceptedMediaType,
+): value is AnthropicMediaType {
+  return (ANTHROPIC_NATIVE as readonly string[]).includes(value);
+}
+
 function extractTextContent(content: readonly { type: string }[]): string {
   let out = "";
   for (const block of content) {
-    if (block.type === "text" && "text" in block && typeof (block as { text: unknown }).text === "string") {
+    if (
+      block.type === "text" &&
+      "text" in block &&
+      typeof (block as { text: unknown }).text === "string"
+    ) {
       out += (block as { text: string }).text;
     }
   }

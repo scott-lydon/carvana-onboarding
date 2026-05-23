@@ -13,7 +13,7 @@
 import type { Request, Response } from "express";
 import type { SchedulerDb } from "../scheduler/db.js";
 import { availableSlots } from "../scheduler/slots.js";
-import { bookSlot } from "../scheduler/atomicity.js";
+import { bookSlot, type BookingAddress } from "../scheduler/atomicity.js";
 
 export function makeSlotsHandler(db: SchedulerDb) {
   return (req: Request, res: Response): void => {
@@ -71,9 +71,60 @@ export function makeBookHandler(db: SchedulerDb) {
       });
       return;
     }
-    const result = bookSlot(db, { slotStart, scope, userId });
+    // Address is optional at the wire level for back-compat with the
+    // legacy bookSlot tests; when present it must be a complete object.
+    let address: BookingAddress | undefined;
+    if (body.address !== undefined) {
+      const parsed = parseAddress(body.address);
+      if (parsed === null) {
+        res.status(400).json({
+          kind: "format_error",
+          field: "address",
+          reason:
+            "address must be {street, city, state(2 letters), zip(5 digits)} with non-empty strings",
+        });
+        return;
+      }
+      address = parsed;
+    }
+    const result = bookSlot(db, {
+      slotStart,
+      scope,
+      userId,
+      ...(address !== undefined ? { address } : {}),
+    });
     res.status(result.kind === "booked" ? 200 : 409).json(result);
   };
+}
+
+/**
+ * Narrow an unknown wire payload to a BookingAddress with strict
+ * field-level validation. Returns null on any failure; the route handler
+ * surfaces a 400 with a single named reason.
+ */
+function parseAddress(input: unknown): BookingAddress | null {
+  if (typeof input !== "object" || input === null) return null;
+  const obj = input as Record<string, unknown>;
+  const street = obj.street;
+  const city = obj.city;
+  const state = obj.state;
+  const zip = obj.zip;
+  if (
+    typeof street !== "string" ||
+    typeof city !== "string" ||
+    typeof state !== "string" ||
+    typeof zip !== "string"
+  ) {
+    return null;
+  }
+  const streetT = street.trim();
+  const cityT = city.trim();
+  const stateT = state.trim().toUpperCase();
+  const zipT = zip.trim();
+  if (streetT === "" || cityT === "") return null;
+  if (!/^[A-Z]{2}$/.test(stateT)) return null;
+  if (!/^\d{5}$/.test(zipT)) return null;
+  return { street: streetT, city: cityT, state: stateT, zip: zipT };
 }
 
 function isValidScope(value: string): boolean {

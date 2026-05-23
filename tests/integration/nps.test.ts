@@ -65,14 +65,14 @@ describe("NPS submit/summary", () => {
     await app.close();
   });
 
-  it("400 on score outside 0-10", async () => {
+  it("400 on score outside 1-5", async () => {
     const response = await fetch(
       `http://127.0.0.1:${String(app.port)}/api/nps/submit`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          score: 11,
+          score: 6,
           elapsedSeconds: 60,
           sessionId: "s1",
         }),
@@ -84,13 +84,27 @@ describe("NPS submit/summary", () => {
     expect(body.field).toBe("score");
   });
 
+  it("400 on score below 1", async () => {
+    const response = await fetch(
+      `http://127.0.0.1:${String(app.port)}/api/nps/submit`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ score: 0, elapsedSeconds: 60, sessionId: "s1" }),
+      },
+    );
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.field).toBe("score");
+  });
+
   it("400 on missing sessionId", async () => {
     const response = await fetch(
       `http://127.0.0.1:${String(app.port)}/api/nps/submit`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ score: 9, elapsedSeconds: 60, sessionId: "" }),
+        body: JSON.stringify({ score: 4, elapsedSeconds: 60, sessionId: "" }),
       },
     );
     expect(response.status).toBe(400);
@@ -111,10 +125,11 @@ describe("NPS submit/summary", () => {
     expect(String(body.labeling)).toMatch(/No demo respondents yet/i);
   });
 
-  it("summary computes NPS = ((promoters - detractors) / n) * 100", async () => {
-    // 2 promoters (9,10), 1 passive (8), 1 detractor (3)
-    // (2 - 1) / 4 = 0.25 = 25
-    const scores = [9, 10, 8, 3];
+  it("summary computes NPS = ((promoters - detractors) / n) * 100 on the 1-5 scale", async () => {
+    // 1-5 buckets: 1-2 detractor, 3 passive, 4-5 promoter.
+    // Submit 4 + 5 + 3 + 1 = 2 promoters, 1 passive, 1 detractor; n=4.
+    // (2 - 1) / 4 = 0.25 = 25.
+    const scores = [4, 5, 3, 1];
     for (let i = 0; i < scores.length; i += 1) {
       await fetch(`http://127.0.0.1:${String(app.port)}/api/nps/submit`, {
         method: "POST",

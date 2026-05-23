@@ -18,15 +18,34 @@
  */
 import type { SchedulerDb } from "./db.js";
 
+export interface BookingAddress {
+  readonly street: string;
+  readonly city: string;
+  readonly state: string;
+  readonly zip: string;
+}
+
 export type BookingResult =
-  | { kind: "booked"; slotStart: string; scope: string; userId: string }
+  | {
+      kind: "booked";
+      slotStart: string;
+      scope: string;
+      userId: string;
+      address?: BookingAddress;
+    }
   | { kind: "conflict"; slotStart: string; scope: string; reason: string };
 
 export function bookSlot(
   db: SchedulerDb,
-  args: { slotStart: string; scope: string; userId: string },
+  args: {
+    slotStart: string;
+    scope: string;
+    userId: string;
+    address?: BookingAddress;
+  },
 ): BookingResult {
-  const { slotStart, scope, userId } = args;
+  const { slotStart, scope, userId, address } = args;
+  const addressJson = address === undefined ? null : JSON.stringify(address);
 
   // BEGIN IMMEDIATE so the writer lock is acquired before any read in this
   // transaction. Without it, two callers can both observe "slot is open"
@@ -35,10 +54,16 @@ export function bookSlot(
   db.exec("BEGIN IMMEDIATE");
   try {
     db.prepare(
-      "INSERT INTO appointments (slot_start, scope, user_id) VALUES (?, ?, ?)",
-    ).run(slotStart, scope, userId);
+      "INSERT INTO appointments (slot_start, scope, user_id, address_json) VALUES (?, ?, ?, ?)",
+    ).run(slotStart, scope, userId, addressJson);
     db.exec("COMMIT");
-    return { kind: "booked", slotStart, scope, userId };
+    return {
+      kind: "booked",
+      slotStart,
+      scope,
+      userId,
+      ...(address !== undefined ? { address } : {}),
+    };
   } catch (err) {
     db.exec("ROLLBACK");
     // better-sqlite3 throws a SqliteError with .code === "SQLITE_CONSTRAINT_UNIQUE"

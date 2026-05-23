@@ -38,6 +38,21 @@ const MIGRATIONS: readonly string[] = [
 ];
 
 /**
+ * Apply schema patches that ALTER an existing table. SQLite doesn't
+ * support `ADD COLUMN IF NOT EXISTS`, so we check PRAGMA table_info
+ * and run ALTER only when the column is missing. Idempotent.
+ */
+function applyPostMigrations(db: SchedulerDb): void {
+  const cols = db
+    .prepare<[], { name: string }>("PRAGMA table_info(appointments)")
+    .all();
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("address_json")) {
+    db.exec("ALTER TABLE appointments ADD COLUMN address_json TEXT");
+  }
+}
+
+/**
  * Open or create the scheduler DB. Idempotent — safe to call multiple
  * times from tests. Migrations run on every call so the schema is
  * guaranteed-current.
@@ -51,6 +66,7 @@ export function openSchedulerDb(dbPath: string): SchedulerDb {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   for (const sql of MIGRATIONS) db.exec(sql);
+  applyPostMigrations(db);
   return db;
 }
 

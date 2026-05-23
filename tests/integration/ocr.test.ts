@@ -134,12 +134,42 @@ describe("/api/ocr/recognize input validation (with stub key)", () => {
       body: JSON.stringify({
         image: "x".repeat(120),
         target: "vin_sticker",
-        mediaType: "image/tiff",
+        // Genuinely unsupported (PDF). The new accept list now covers
+        // TIFF/HEIC/AVIF/BMP, so we test something outside the list.
+        mediaType: "application/pdf",
       }),
     });
     expect(response.status).toBe(400);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.kind).toBe("format_error");
     expect(body.field).toBe("mediaType");
+  });
+
+  it("accepts iPhone HEIC mediaType (validation passes; vision call deferred)", async () => {
+    // We send a non-image stub payload that's >= 100 chars; the
+    // mediaType check passes, then the sharp transcode runs. Sharp will
+    // reject the garbage bytes — surfacing as a 400 "could not convert
+    // image/heic → image/jpeg" — but crucially NOT as a mediaType
+    // rejection. This is exactly the behavior change we want: HEIC is
+    // no longer rejected at the type gate.
+    const response = await fetch(`http://127.0.0.1:${String(port)}/api/ocr/recognize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image: "x".repeat(200),
+        target: "vin_sticker",
+        mediaType: "image/heic",
+      }),
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+    // The validator passes; either the conversion fails (400 with
+    // field=image) or vision call fails (503). Both are acceptable
+    // outcomes for a bogus payload — the negative assertion is that
+    // mediaType was NOT the rejection reason.
+    if (response.status === 400) {
+      expect(body.field).not.toBe("mediaType");
+    } else {
+      expect([200, 503]).toContain(response.status);
+    }
   });
 });

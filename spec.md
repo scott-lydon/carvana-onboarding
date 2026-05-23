@@ -42,7 +42,7 @@ Given the offer has been delivered. When the seller asks to schedule pickup. The
 Given the seller expresses uncertainty (e.g., "what if the inspection finds something I missed?"). When the chatbot detects the anxiety signal. Then it calls into SupportContent and renders the relevant pre-baked empathy widget (e.g., "Offer adjustment policy: in 2026, 73% of Carvana pickups paid the original offer; the median adjustment was $200 for undisclosed cosmetic issues; you can walk away at pickup if the adjusted offer doesn't work for you.").
 
 **US-V2-7 — 15-minute completion + NPS micro-survey.** As a motivated seller, I want to finish the entire flow (plate → condition → offer → pickup booked) in under 15 minutes and rate the experience at the end.
-Given the seller commits to the flow. When they reach the appointment-confirmed screen. Then the total elapsed time is recorded (Playwright stopwatches the happy path), and an NPS micro-survey ("How likely are you to recommend Carvana's onboarding to a friend, 0-10?") renders with a free-text follow-up.
+Given the seller commits to the flow. When they reach the appointment-confirmed screen. Then the total elapsed time is recorded (Playwright stopwatches the happy path), and an NPS micro-survey ("How likely are you to recommend Carvana's onboarding to a friend, 1-5?") renders with a free-text follow-up. NPS buckets: 1-2 = detractor, 3 = passive, 4-5 = promoter. The aggregate NPS formula is unchanged: ((promoters - detractors) / n) × 100.
 
 ### v2 metrics acceptance criteria (how each PRD metric is honestly claimed in 2 days)
 
