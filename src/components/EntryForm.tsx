@@ -293,24 +293,39 @@ function DegradationPanel(props: {
       const trim = v.trim !== undefined ? ` ${v.trim}` : "";
       const bodyStyle =
         v.bodyStyle !== undefined ? ` (${v.bodyStyle})` : "";
+      // Below the green vehicle-resolved card we render a Demo mode panel
+      // explaining that "Get my offer" stops at vehicle identification in
+      // this prototype. Without this the user sees the vehicle card and
+      // expects a price next, then gets confused when nothing happens.
+      // Same copy + class as the chat path's DemoModePanel (see
+      // ChatbotShell.tsx) so both surfaces stay visually consistent.
       return (
-        <section className="result result-ok" aria-live="polite">
-          <h2>
-            {String(v.year)} {v.make} {v.model}
-            {trim}
-            {bodyStyle}
-          </h2>
-          <p className="muted">
-            Resolved in {String(body.latencyMs)} ms via{" "}
-            <code>{body.viaVendor}</code>.
-          </p>
-          <p>
-            Is this your car?{" "}
-            <button type="button" className="link" onClick={onRetry}>
-              No, try again
-            </button>
-          </p>
-        </section>
+        <>
+          <section className="result result-ok" aria-live="polite">
+            <h2>
+              {String(v.year)} {v.make} {v.model}
+              {trim}
+              {bodyStyle}
+            </h2>
+            <p className="muted">
+              Resolved in {String(body.latencyMs)} ms via{" "}
+              <code>{body.viaVendor}</code>.
+            </p>
+            <p>
+              Is this your car?{" "}
+              <button type="button" className="link" onClick={onRetry}>
+                No, try again
+              </button>
+            </p>
+          </section>
+          <div className="demo-mode-panel" role="status">
+            <strong>Demo mode</strong>
+            In production this would show your instant offer. The
+            instant-offer engine isn&rsquo;t wired into this prototype.
+            The flow you can complete here ends with a confirmed pickup
+            booking. Switch to the chat tab to walk the booking flow.
+          </div>
+        </>
       );
     }
     case "not_found": {
