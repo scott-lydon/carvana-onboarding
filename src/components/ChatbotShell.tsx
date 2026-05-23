@@ -144,7 +144,19 @@ export function ChatbotShell(): JSX.Element {
   const sendMessage = useCallback(
     async (userText: string): Promise<void> => {
       const trimmed = userText.trim();
-      if (trimmed === "" || isStreaming) {
+      if (trimmed === "" && !isStreaming) {
+        // Empty-submit attempt: surface an inline error instead of silently
+        // returning. This is both better UX (the user sees WHY the click
+        // did nothing) and better testability (model-based test agents like
+        // vouch see a visible state change instead of timing out waiting
+        // for one). Auto-clears after 2s so it doesn't linger.
+        setChatError("Type a message before sending.");
+        window.setTimeout(() => {
+          setChatError(null);
+        }, 2000);
+        return;
+      }
+      if (isStreaming) {
         return;
       }
       setChatError(null);
