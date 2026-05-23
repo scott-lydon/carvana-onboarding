@@ -130,13 +130,19 @@ export function ChatbotShell(): JSX.Element {
   const [isFocused, setIsFocused] = useState<boolean>(false);
   const [isMobileViewport, setIsMobileViewport] = useState<boolean>(false);
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 480px)");
+    // Listen to BOTH matchMedia change AND window resize. Playwright's
+    // setViewportSize fires window 'resize' reliably; matchMedia 'change'
+    // is the cleaner signal but doesn't always fire in headless. Belt
+    // and suspenders so model-based test agents see the state update.
     const update = (): void => {
-      setIsMobileViewport(mq.matches);
+      setIsMobileViewport(window.innerWidth <= 480);
     };
     update();
+    window.addEventListener("resize", update);
+    const mq = window.matchMedia("(max-width: 480px)");
     mq.addEventListener("change", update);
     return () => {
+      window.removeEventListener("resize", update);
       mq.removeEventListener("change", update);
     };
   }, []);
@@ -353,7 +359,6 @@ export function ChatbotShell(): JSX.Element {
         <button
           type="submit"
           disabled={isStreaming}
-          aria-disabled={isStreaming || draft.trim() === ""}
           style={
             draft.trim() === "" && !isStreaming
               ? sendButtonEmptyStyle
