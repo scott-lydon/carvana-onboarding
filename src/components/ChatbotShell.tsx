@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, JSX, KeyboardEvent } from "react";
 import { EntryForm } from "./EntryForm.tsx";
+import { OcrCapture } from "./OcrCapture.tsx";
 
 /**
  * Anthropic message shape that the server expects in the POST body. We
@@ -252,6 +253,14 @@ export function ChatbotShell(): JSX.Element {
           Send
         </button>
       </form>
+      <OcrCapture
+        onVinScanned={(vin) => {
+          // Inject the scanned VIN as a user message. The chatbot's system
+          // prompt instructs it to call lookup_vin when it sees a message
+          // of the shape "Scanned VIN: <17 chars>".
+          void sendMessage(`Scanned VIN: ${vin}`);
+        }}
+      />
     </div>
   );
 }

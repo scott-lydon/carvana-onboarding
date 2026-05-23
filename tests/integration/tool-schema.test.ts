@@ -32,14 +32,21 @@ describe("CAT-17: chat tool-schema integrity", () => {
     ).rejects.toThrow(/unknown tool name/);
   });
 
-  it("not-yet-wired tools return a structured not_wired result", async () => {
-    for (const toolName of [
+  it("ocr_recognize returns user_action_required (slice B reality: server can't capture camera)", async () => {
+    const dispatched = await dispatchTool(
       "ocr_recognize",
-      "schedule_pickup",
-      "get_support_content",
-    ]) {
+      "tool_use_id_ocr",
+      { target: "vin_sticker" },
+      undefined,
+    );
+    const result = dispatched.result as Record<string, unknown>;
+    expect(result.kind).toBe("user_action_required");
+    expect(result.action).toBe("tap_camera_button");
+  });
+
+  it("schedule_pickup and get_support_content still return not_wired in slice B", async () => {
+    for (const toolName of ["schedule_pickup", "get_support_content"]) {
       const inputByTool: Record<string, unknown> = {
-        ocr_recognize: { target: "vin_sticker" },
         schedule_pickup: { zip: "78701" },
         get_support_content: { topic: "data_privacy" },
       };

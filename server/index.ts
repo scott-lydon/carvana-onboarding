@@ -22,6 +22,7 @@ import {
   makeVinLookupHandler,
 } from "./routes/lookup.js";
 import { isChatConfigured, makeChatHandler } from "./routes/chat.js";
+import { isOcrConfigured, makeOcrHandler } from "./routes/ocr.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -115,18 +116,29 @@ if (chatHandler === undefined) {
   );
 }
 
-// v2 Slice B wires this up against Claude vision (replaces the prior
-// Google Cloud Vision plan from v1).
-app.post("/api/ocr/recognize", (_req: Request, res: Response): void => {
-  res.status(501).json({
-    error: "NOT_IMPLEMENTED",
-    slice: "wires up in v2 slice B",
-    message:
-      "OCR recognition is not yet implemented in this build. " +
-      "v2 slice B will route this through Anthropic Messages with image " +
-      "content blocks (Claude vision) — the same API key as /api/chat.",
+// v2 Slice B: Claude vision OCR. Same Anthropic key as /api/chat. If the
+// key is missing we register a 503 handler so a fresh setup gets the same
+// actionable diagnostics as the chat endpoint.
+const ocrHandler = makeOcrHandler(process.env.ANTHROPIC_API_KEY);
+if (ocrHandler === undefined) {
+  app.post("/api/ocr/recognize", (_req: Request, res: Response): void => {
+    res.status(503).json({
+      kind: "configuration_missing",
+      missing_env_var: "ANTHROPIC_API_KEY",
+      signup_url: "https://console.anthropic.com/settings/keys",
+      message:
+        "OCR needs an Anthropic API key (same one /api/chat uses). " +
+        "Set ANTHROPIC_API_KEY in .env.local and restart.",
+    });
   });
-});
+} else {
+  app.post("/api/ocr/recognize", (req: Request, res: Response): void => {
+    void ocrHandler(req, res);
+  });
+  console.log(
+    `[server] /api/ocr/recognize wired (ocr_configured=${String(isOcrConfigured(process.env.ANTHROPIC_API_KEY))})`,
+  );
+}
 
 // Static-serve the Vite build in production AFTER the /api routes are
 // registered so the API takes precedence over the SPA's index.html fallback.

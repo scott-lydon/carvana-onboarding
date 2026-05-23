@@ -164,13 +164,23 @@ export async function dispatchTool(
         result: await runLookupVin(input, cascade),
       };
     case "ocr_recognize":
+      // Slice B reality: the chatbot cannot capture from the user's camera.
+      // The OcrCapture component (visible in the chat composer) is the
+      // user-initiated path. When the chatbot calls this tool, we return
+      // user_action_required with a short instruction the chatbot can
+      // paraphrase. The actual OCR result arrives as a "Scanned VIN: ..."
+      // user message when OcrCapture posts to /api/ocr/recognize directly.
       return {
         toolName,
         toolUseId,
         result: {
-          kind: "not_wired",
-          slice: "B",
-          note: "OCR recognition wires up in slice B. Tell the user the photo-capture path is being added.",
+          kind: "user_action_required",
+          action: "tap_camera_button",
+          note:
+            "Tell the user there's a camera button below the chat composer. " +
+            "When they tap it, scan the VIN sticker (under the windshield, " +
+            "driver-side door jamb) or registration card. The scanned VIN " +
+            "will appear as a new user message and you should then call lookup_vin on it.",
         },
       };
     case "schedule_pickup":
