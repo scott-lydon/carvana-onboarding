@@ -129,23 +129,92 @@ export class Vin {
       const positions = Array.from(this.normalized).flatMap((ch, i) =>
         forbidden.test(ch) ? [`${ch}@${String(i)}`] : [],
       );
-      // Map the actually-present forbidden letters to their numeric look-alikes
-      // so the recovery hint matches the input, not a hardcoded list. I→1,
-      // O→0, Q→0 (Q rarely substitutes cleanly; 0 is the conservative pick).
-      const presentForbidden = Array.from(
-        new Set(Array.from(this.normalized).filter((ch) => forbidden.test(ch))),
-      );
-      const subs: Record<string, string> = { I: "1", O: "0", Q: "0" };
-      const suggestion = presentForbidden
-        .map((ch) => `${ch}→${subs[ch] ?? "?"}`)
-        .join(", ");
+      // The route handler runs `tryParseVinWithPermutation` first; if it
+      // reaches this throw, the substitution attempt already failed. So we
+      // do NOT instruct callers to "try character-permutation recovery" — by
+      // the time this fires, that was tried and didn't help. The message is
+      // pure diagnostics for server logs and tests.
       throw new Error(
         `VIN contains forbidden characters per ISO 3779 ` +
           `(I, O, Q are not allowed): ${positions.join(", ")} in ` +
-          `${this.normalized}. Likely substitutions: ${suggestion}. ` +
-          `Try character-permutation recovery before surfacing this error.`,
+          `${this.normalized}.`,
       );
     }
+  }
+}
+
+/**
+ * Substitute the forbidden ISO 3779 letters (I, O, Q) with their numeric
+ * look-alikes (1, 0, 0). The two letters whose numeric pair is canonical
+ * (I→1, O→0) are well-attested in real OCR/handwriting confusion; Q→0 is
+ * the conservative fallback because Q rarely appears even in confusion sets.
+ */
+function permuteForbiddenLetters(raw: string): string {
+  const subs: Record<string, string> = { I: "1", O: "0", Q: "0" };
+  return raw
+    .toUpperCase()
+    .split("")
+    .map((ch) => subs[ch] ?? ch)
+    .join("");
+}
+
+/**
+ * Result of attempting to parse a VIN with optional auto-permutation
+ * recovery. The route handler uses this so the user never has to manually
+ * fix I/O/Q — we try the substitution first and surface a heads-up.
+ *
+ * Shape:
+ *   - `vin`: the successfully-constructed Vin (validated, 17 chars, no I/O/Q)
+ *   - `corrected`: present only if permutation was applied. Carries the
+ *     original raw input and the corrected normalized form, so the client
+ *     can display a calm "we corrected your VIN" banner with both values.
+ *   - `failure`: present only when even permutation failed; carries the
+ *     ORIGINAL constructor error (not the permuted one) so the user sees
+ *     diagnostics referencing what they typed, not what we tried.
+ */
+export type VinParseAttempt =
+  | { kind: "ok"; vin: Vin; corrected?: { original: string; normalized: string } }
+  | { kind: "failed"; failure: Error };
+
+/**
+ * Try to construct a Vin. If the raw input has I/O/Q and the strict
+ * constructor rejects it, try ONCE more with I→1, O→0, Q→0. If THAT also
+ * fails (wrong length, etc.), return the ORIGINAL failure so error messages
+ * reference what the user typed.
+ *
+ * This is the function the route handler should call instead of
+ * `new Vin(input)` directly, so the auto-permutation flow is centralized
+ * and testable in isolation.
+ */
+export function tryParseVinWithPermutation(rawInput: string): VinParseAttempt {
+  let originalFailure: Error;
+  try {
+    return { kind: "ok", vin: new Vin(rawInput) };
+  } catch (err) {
+    originalFailure = err instanceof Error
+      ? err
+      : new Error(`Vin constructor rejected input: ${String(err)}`);
+  }
+
+  // Only attempt permutation if the input actually contains forbidden chars.
+  // Otherwise permutation can't help (the failure is length, type, or empty).
+  const upper = typeof rawInput === "string" ? rawInput.toUpperCase() : "";
+  if (!/[IOQ]/.test(upper)) {
+    return { kind: "failed", failure: originalFailure };
+  }
+
+  const permuted = permuteForbiddenLetters(rawInput);
+  try {
+    const vin = new Vin(permuted);
+    return {
+      kind: "ok",
+      vin,
+      corrected: { original: rawInput, normalized: vin.normalized },
+    };
+  } catch {
+    // Permutation didn't help; surface the original failure so the user
+    // sees an error referencing their literal input, not the permuted one.
+    return { kind: "failed", failure: originalFailure };
   }
 }
 
@@ -176,6 +245,17 @@ export type LookupResult =
       readonly vehicle: Vehicle;
       readonly viaVendor: string;
       readonly latencyMs: number;
+      /**
+       * Present only when the input was auto-corrected before lookup. The
+       * client renders a calm "we corrected your VIN" banner showing both
+       * the original and the corrected form. Absent means the input was
+       * accepted as-typed.
+       */
+      readonly correction?: {
+        readonly original: string;
+        readonly normalized: string;
+        readonly reason: string;
+      };
     }
   | {
       readonly kind: "not_found";
