@@ -53,6 +53,20 @@ Given the seller commits to the flow. When they reach the appointment-confirmed 
 | NPS 70+ for the onboarding experience | Live NPS micro-survey widget collects ratings during the demo (the demo recording will show ≥3 real responses). For the pitch, cite comparable products' published NPS using this onboarding pattern. Acknowledge we are designing for the threshold, not measuring it at scale. | `src/components/NpsSurvey.tsx`, `server/routes/nps.ts`, `docs/metrics-evidence.md` |
 | <3 s response time under load | k6 load test against the deployed Render instance (`scripts/perf/load.k6.js`), p95 reported in `docs/perf-report.md`. Render service pinned to paid tier OR pre-warmed before the demo to dodge cold-start penalty. | `scripts/perf/load.k6.js`, `docs/perf-report.md` |
 
+### v2 micro-interaction specifications (visible state changes for automation + a11y)
+
+These describe state changes that happen on small interactions and are critical for both screen-reader users and model-based test agents (vouch, Playwright, etc.). They are NOT in the happy path but are part of the contract.
+
+- **Empty-message Send button click.** When the user clicks Send with an empty textarea, the chat surface MUST render an inline alert "Type a message before sending." that persists for 2 seconds and then auto-clears. The chat must NOT submit, MUST NOT call /api/chat, and MUST NOT clear the textarea. Both the Send button and the textarea remain available throughout.
+
+- **Textarea focus.** When the user focuses the chat textarea (click, tab, or programmatic), the placeholder text MUST change from "Type your plate and state, like \"XRJ4041 in Texas\"" to "Keyboard ready — type your plate and state" AND the textarea's aria-label MUST update to "Chat message (focused)". The focused state clears on blur, restoring the original placeholder.
+
+- **Mobile viewport (≤480px wide).** The chat container's CSS width MUST shrink to `min(720px, calc(100vw - 24px))` AND the chat header MUST visibly append "· compact mobile layout" so both layout and the layout-mode-indication are observable. The change is reversible: returning to desktop widths removes the indicator.
+
+- **Camera permission request (Scan VIN with camera click).** Clicking the green "Scan VIN with camera" button MUST synchronously render an inline status "Camera permission requested — accept the browser prompt to scan." BEFORE the browser's native permission prompt appears. The status clears on permission grant (camera viewfinder mounts) or on permission denial (replaced by "Camera permission denied" copy).
+
+- **File picker request (Upload photo of VIN click).** Clicking the "or upload a photo" link MUST synchronously render an inline status "Pick a VIN photo from your library — drag and drop also works." BEFORE the native file picker opens. The hint clears on file selection (OCR upload flow starts) or after 4 seconds if the user cancels the picker.
+
 ### v2 demo script (60-second happy path, replaces v1 demo script)
 
 1. (0:00-0:08) "Here's Carvana today. I type my plate, it fails, app blames me." (Carvana baseline footage, plate lookup error.)

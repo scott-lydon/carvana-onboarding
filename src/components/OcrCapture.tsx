@@ -84,7 +84,16 @@ export function OcrCapture({ onVinScanned }: OcrCaptureProps): JSX.Element {
   );
 
   const handleCameraClick = useCallback(async () => {
-    setStatus({ kind: "uploading" });
+    // Show a visible permission-prompt hint synchronously. The browser's
+    // native permission dialog is invisible to Playwright (and confusing
+    // to users who haven't seen it before); the inline hint clears once
+    // permission is granted (stream attaches) or denied (catch sets
+    // status to error).
+    setStatus({
+      kind: "error",
+      message:
+        "Camera permission requested — accept the browser prompt to scan.",
+    });
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
