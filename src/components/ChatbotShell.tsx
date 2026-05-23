@@ -347,10 +347,7 @@ export function ChatbotShell(): JSX.Element {
             setDraft(event.target.value);
             // Clear the validation hint as soon as the user starts typing.
             // Real chat errors are preserved (don't auto-clear on type).
-            if (
-              chatError !== null &&
-              chatError.startsWith("Type a message")
-            ) {
+            if (chatError?.startsWith("Type a message") === true) {
               setChatError(null);
             }
           }}
