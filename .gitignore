@@ -38,3 +38,9 @@ test-results/
 # Local SQLite for the demo telemetry
 *.sqlite
 *.sqlite-journal
+
+# v2 slice F: k6 run summary (regenerated each run, not committed)
+perf-summary.json
+
+# v2 slice C: SQLite scheduler DB (ephemeral; recreated on boot)
+data/
