@@ -28,11 +28,17 @@ export function createCascade(env: CascadeFactoryEnv): VendorCascade | undefined
   // Cascade order: CarsXE primary (self-service signup, working today),
   // VinAudit fallback (B2B sales pending). The cascade walks in array order
   // so the primary's miss/timeout falls through to the secondary.
+  // Treat empty string the same as undefined: .env.local files commonly
+  // declare a key with no value (`CARSXE_BASE_URL=` on its own line) to
+  // document that the override is supported, not to set the override to
+  // the empty string. Passing "" through as baseUrl crashes the URL
+  // constructor inside the fetch call with the unhelpful message
+  // "Failed to parse URL from /platedecoder?...". Guard at the boundary.
   if (env.CARSXE_API_KEY !== undefined && env.CARSXE_API_KEY !== "") {
     adapters.push(
       new CarsXEAdapter({
         apiKey: env.CARSXE_API_KEY,
-        ...(env.CARSXE_BASE_URL !== undefined
+        ...(env.CARSXE_BASE_URL !== undefined && env.CARSXE_BASE_URL !== ""
           ? { baseUrl: env.CARSXE_BASE_URL }
           : {}),
       }),
@@ -43,7 +49,7 @@ export function createCascade(env: CascadeFactoryEnv): VendorCascade | undefined
     adapters.push(
       new VinAuditAdapter({
         apiKey: env.VINAUDIT_API_KEY,
-        ...(env.VINAUDIT_BASE_URL !== undefined
+        ...(env.VINAUDIT_BASE_URL !== undefined && env.VINAUDIT_BASE_URL !== ""
           ? { baseUrl: env.VINAUDIT_BASE_URL }
           : {}),
       }),

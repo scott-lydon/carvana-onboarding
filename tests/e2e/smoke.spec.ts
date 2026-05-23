@@ -8,9 +8,12 @@ import { expect, test } from "@playwright/test";
  * now "the entry UI is on screen and the tabs work." The bot-detection /
  * not-found / format-error scenarios live in their own spec files.
  */
-test("entry form mounts with plate + VIN tabs", async ({ page }) => {
+test("entry form mounts with plate + VIN tabs (via v2 fallback link)", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveTitle(/Carvana Onboarding/);
+  // v2 slice A: the ChatbotShell is the primary entry surface. The
+  // slice-1 EntryForm is reachable through the "prefer a form?" link.
+  await page.getByRole("button", { name: /prefer a form/i }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText(
     "Sell your car",
   );

@@ -35,6 +35,9 @@ test.describe("bot-detected differentiation", () => {
     });
 
     await page.goto("/");
+    // v2 slice A: navigate to the slice-1 EntryForm via the chatbot's
+    // "prefer a form?" fallback link.
+    await page.getByRole("button", { name: /prefer a form/i }).click();
     await page.getByPlaceholder(/XRJ/i).fill("ABC1234");
     await page.getByRole("button", { name: /Get my offer/i }).click();
 
@@ -69,6 +72,9 @@ test.describe("bot-detected differentiation", () => {
     });
 
     await page.goto("/");
+    // v2 slice A: navigate to the slice-1 EntryForm via the chatbot's
+    // "prefer a form?" fallback link.
+    await page.getByRole("button", { name: /prefer a form/i }).click();
     await page.getByPlaceholder(/XRJ/i).fill("XYZ9999");
     await page.getByRole("button", { name: /Get my offer/i }).click();
 
@@ -97,6 +103,9 @@ test.describe("bot-detected differentiation", () => {
     });
 
     await page.goto("/");
+    // v2 slice A: navigate to the slice-1 EntryForm via the chatbot's
+    // "prefer a form?" fallback link.
+    await page.getByRole("button", { name: /prefer a form/i }).click();
     await page.getByPlaceholder(/XRJ/i).fill("ABC1234");
     await page.getByRole("button", { name: /Get my offer/i }).click();
     await expect(

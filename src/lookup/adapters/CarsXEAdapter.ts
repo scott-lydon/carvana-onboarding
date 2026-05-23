@@ -66,7 +66,14 @@ export class CarsXEAdapter implements VendorAdapter {
 
   public constructor(config: CarsXEAdapterConfig) {
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
+    // Defense in depth: createCascade is the boundary that should already
+    // strip empty-string baseUrl, but if a caller forgets, we still want a
+    // usable URL. `??` doesn't catch "" (only null/undefined), so we treat
+    // the empty string explicitly as "no override, use default".
+    this.baseUrl =
+      config.baseUrl === undefined || config.baseUrl === ""
+        ? DEFAULT_BASE_URL
+        : config.baseUrl;
     this.fetchImpl = config.fetchImpl ?? globalThis.fetch;
   }
 
