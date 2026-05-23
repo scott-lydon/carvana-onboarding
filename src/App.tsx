@@ -1,12 +1,14 @@
-import { EntryForm } from "./components/EntryForm.tsx";
+import { ChatbotShell } from "./components/ChatbotShell.tsx";
 import type { JSX } from "react";
 
 /**
- * App root. Slice 1.6 replaced the placeholder server-status scaffold with
- * the EntryForm — the actual entry-step UI on top of the live cascade.
- * Anyone landing on the deployed URL now sees the working product, not the
- * scaffold.
+ * App root.
+ *
+ * v2 slice A: the chatbot is now the primary entry surface. The slice-1
+ * EntryForm is still reachable via a "prefer a form?" link inside the
+ * ChatbotShell, so anyone who hits a chat issue (or just wants a form) has
+ * a one-click fallback.
  */
 export function App(): JSX.Element {
-  return <EntryForm />;
+  return <ChatbotShell />;
 }

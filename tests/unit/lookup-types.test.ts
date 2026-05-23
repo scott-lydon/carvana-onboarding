@@ -80,7 +80,13 @@ describe("VIN validation", () => {
     expect(() => new Vin("1HGCM82633A12345Q")).toThrow(/I, O, Q/);
   });
 
-  it("error message names the permutation-recovery path (EC2)", () => {
+  it("error message names the forbidden character AND its position (EC2)", () => {
+    // After the tryParseVinWithPermutation helper landed, the Vin constructor
+    // no longer suggests "try character-permutation recovery" because by the
+    // time the constructor throws, the route handler has already attempted
+    // permutation and failed. The message is now pure diagnostics naming the
+    // forbidden character(s) and their 0-indexed positions, so server logs
+    // and tests can reason about WHICH character offended without a parse.
     const err = (() => {
       try {
         return new Vin("IHGCM82633A123456");
@@ -88,6 +94,7 @@ describe("VIN validation", () => {
         return e instanceof Error ? e.message : String(e);
       }
     })();
-    expect(err).toContain("character-permutation recovery");
+    expect(err).toContain("forbidden characters per ISO 3779");
+    expect(err).toContain("I@0");
   });
 });

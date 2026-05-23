@@ -21,6 +21,7 @@ import {
   makePlateLookupHandler,
   makeVinLookupHandler,
 } from "./routes/lookup.js";
+import { isChatConfigured, makeChatHandler } from "./routes/chat.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -82,12 +83,48 @@ app.post("/api/lookup/vin", (req: Request, res: Response): void => {
   void vinHandler(req, res);
 });
 
-// Slice 4 wires this up against Google Cloud Vision.
+// v2 Slice A: chatbot orchestrator via Anthropic Messages API streaming.
+// If ANTHROPIC_API_KEY is not set, the handler factory returns undefined
+// and we register a 503 configuration_missing handler that names the env
+// var AND the signup URL — so a fresh setup gets actionable diagnostics
+// the first time someone POSTs to /api/chat.
+const chatHandler = makeChatHandler(process.env.ANTHROPIC_API_KEY, cascade);
+if (chatHandler === undefined) {
+  console.warn(
+    "[server] ANTHROPIC_API_KEY not set; /api/chat returns 503 configuration_missing. " +
+      "Get a key at https://console.anthropic.com/settings/keys and add it to .env.local.",
+  );
+  app.post("/api/chat", (_req: Request, res: Response): void => {
+    res.status(503).json({
+      kind: "configuration_missing",
+      missing_env_var: "ANTHROPIC_API_KEY",
+      signup_url: "https://console.anthropic.com/settings/keys",
+      message:
+        "The chatbot needs an Anthropic API key. Set ANTHROPIC_API_KEY " +
+        "in .env.local (or in the Render dashboard for the deployed " +
+        "instance) and restart. The key is free to create at the signup URL " +
+        "above; pay-as-you-go billing starts only after the first call.",
+    });
+  });
+} else {
+  app.post("/api/chat", (req: Request, res: Response): void => {
+    void chatHandler(req, res);
+  });
+  console.log(
+    `[server] /api/chat wired (chat_configured=${String(isChatConfigured(process.env.ANTHROPIC_API_KEY))})`,
+  );
+}
+
+// v2 Slice B wires this up against Claude vision (replaces the prior
+// Google Cloud Vision plan from v1).
 app.post("/api/ocr/recognize", (_req: Request, res: Response): void => {
   res.status(501).json({
     error: "NOT_IMPLEMENTED",
-    slice: "wires up in slice 4",
-    message: "OCR recognition is not yet implemented in this build.",
+    slice: "wires up in v2 slice B",
+    message:
+      "OCR recognition is not yet implemented in this build. " +
+      "v2 slice B will route this through Anthropic Messages with image " +
+      "content blocks (Claude vision) — the same API key as /api/chat.",
   });
 });
 
