@@ -56,7 +56,7 @@ describe("CAT-17: chat tool-schema integrity", () => {
     expect(result.action).toBe("tap_scheduler_button");
   });
 
-  it("get_support_content still returns not_wired in slice C (lands in slice D)", async () => {
+  it("get_support_content returns the structured support card (slice D)", async () => {
     const dispatched = await dispatchTool(
       "get_support_content",
       "tool_use_id_sc",
@@ -64,8 +64,9 @@ describe("CAT-17: chat tool-schema integrity", () => {
       undefined,
     );
     const result = dispatched.result as Record<string, unknown>;
-    expect(result.kind).toBe("not_wired");
-    expect(typeof result.slice).toBe("string");
+    expect(result.kind).toBe("support_content");
+    expect(typeof result.title).toBe("string");
+    expect(typeof result.body).toBe("string");
   });
 
   it("lookup_plate without a cascade returns configuration_missing", async () => {

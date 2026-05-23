@@ -332,6 +332,14 @@ function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
       </div>
     );
   }
+  if (card.name === "get_support_content" && isSupportContent(result)) {
+    return (
+      <div style={supportCardStyle}>
+        <strong style={{ fontSize: 14 }}>{result.title}</strong>
+        <div style={{ marginTop: 4 }}>{result.body}</div>
+      </div>
+    );
+  }
   return (
     <div style={genericToolCardStyle}>
       <strong style={{ fontSize: 13 }}>tool: {card.name}</strong>
@@ -340,6 +348,23 @@ function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
         <pre style={preStyle}>{JSON.stringify(result, null, 2)}</pre>
       </details>
     </div>
+  );
+}
+
+/**
+ * Type guard for support_content tool results. The dispatcher returns
+ * { kind: "support_content", topic, title, body, telemetryEvent }; we
+ * narrow on kind === "support_content" + presence of the body string.
+ */
+function isSupportContent(
+  value: unknown,
+): value is { kind: "support_content"; title: string; body: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.kind === "support_content" &&
+    typeof obj.title === "string" &&
+    typeof obj.body === "string"
   );
 }
 
@@ -595,6 +620,16 @@ const genericToolCardStyle: React.CSSProperties = {
   borderRadius: 10,
   maxWidth: "75%",
   fontSize: 13,
+};
+const supportCardStyle: React.CSSProperties = {
+  background: "#eff6ff",
+  border: "1px solid #bfdbfe",
+  color: "#1e3a8a",
+  padding: "10px 14px",
+  borderRadius: 10,
+  maxWidth: "85%",
+  fontSize: 13,
+  lineHeight: 1.45,
 };
 const preStyle: React.CSSProperties = {
   fontSize: 11,

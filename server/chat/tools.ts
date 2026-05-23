@@ -21,6 +21,10 @@ import {
   tryParseVinWithPermutation,
 } from "../../src/lookup/types.js";
 import type { VendorCascade } from "../../src/lookup/VendorCascade.js";
+import {
+  SUPPORT_CARDS,
+  type SupportTopic,
+} from "../../src/support-content/cards.js";
 
 /**
  * Anthropic Tool definitions. Names must match the dispatcher's switch
@@ -203,16 +207,44 @@ export async function dispatchTool(
             "'Pickup booked: <displayLabel> at <scope>'.",
         },
       };
-    case "get_support_content":
+    case "get_support_content": {
+      // Slice D: surface a pre-baked card. The LLM picks the topic via
+      // tool input; the dispatcher returns the literal card body
+      // committed at src/support-content/cards.ts. The LLM MUST NOT
+      // paraphrase or generate replacement empathy text (constitutional
+      // non-negotiable 10 / CAT-12).
+      if (typeof input !== "object" || input === null) {
+        return {
+          toolName,
+          toolUseId,
+          result: { kind: "format_error", reason: "input must be an object" },
+        };
+      }
+      const obj = input as Record<string, unknown>;
+      const topicInput = obj.topic;
+      if (typeof topicInput !== "string" || !isKnownSupportTopic(topicInput)) {
+        return {
+          toolName,
+          toolUseId,
+          result: {
+            kind: "format_error",
+            reason: `unknown topic. Known: ${Object.keys(SUPPORT_CARDS).join(", ")}`,
+          },
+        };
+      }
+      const card = SUPPORT_CARDS[topicInput];
       return {
         toolName,
         toolUseId,
         result: {
-          kind: "not_wired",
-          slice: "D",
-          note: "Pre-baked support content wires up in slice D. For now, acknowledge the user's question and offer to come back to it.",
+          kind: "support_content",
+          topic: card.topic,
+          title: card.title,
+          body: card.body,
+          telemetryEvent: card.telemetryEvent,
         },
       };
+    }
     default:
       throw new Error(
         `dispatchTool received unknown tool name "${toolName}". ` +
@@ -220,6 +252,14 @@ export async function dispatchTool(
           `to TOOLS without updating the dispatcher. Check server/chat/tools.ts.`,
       );
   }
+}
+
+/**
+ * Type guard for SupportTopic. Defined here (not in cards.ts) so the
+ * domain file stays free of runtime narrowing concerns.
+ */
+function isKnownSupportTopic(value: string): value is SupportTopic {
+  return value in SUPPORT_CARDS;
 }
 
 /**
