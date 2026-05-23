@@ -57,7 +57,7 @@ Given the seller commits to the flow. When they reach the appointment-confirmed 
 
 These describe state changes that happen on small interactions and are critical for both screen-reader users and model-based test agents (vouch, Playwright, etc.). They are NOT in the happy path but are part of the contract.
 
-- **Empty-message Send button click.** When the user clicks Send with an empty textarea, the chat surface MUST render an inline alert with the literal text "Type a message before sending." (no surrounding framing) that persists for 2 seconds and then auto-clears. The chat must NOT submit, MUST NOT call /api/chat, and MUST NOT clear the textarea. Both the Send button and the textarea remain available throughout.
+- **Empty-message Send button click.** When the user clicks Send with an empty textarea, the chat surface MUST render an inline alert with the literal text "Type a message before sending." (no surrounding framing). The alert persists until the user starts typing into the textarea (auto-clears on any input). The chat must NOT submit, MUST NOT call /api/chat, and MUST NOT clear the textarea. Both the Send button and the textarea remain available throughout.
 
 - **Textarea focus.** When the user focuses the chat textarea (click, tab, or programmatic), a visible caption "Active typing area — press Enter to send" MUST appear below the form. The placeholder text MUST change from "Type your plate and state, like \"XRJ4041 in Texas\"" to "Keyboard ready — type your plate and state" AND the textarea's aria-label MUST update to "Chat message (focused)". The caption and focused state all clear on blur.
 
