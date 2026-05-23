@@ -57,9 +57,9 @@ Given the seller commits to the flow. When they reach the appointment-confirmed 
 
 These describe state changes that happen on small interactions and are critical for both screen-reader users and model-based test agents (vouch, Playwright, etc.). They are NOT in the happy path but are part of the contract.
 
-- **Empty-message Send button click.** When the user clicks Send with an empty textarea, the chat surface MUST render an inline alert "Type a message before sending." that persists for 2 seconds and then auto-clears. The chat must NOT submit, MUST NOT call /api/chat, and MUST NOT clear the textarea. Both the Send button and the textarea remain available throughout.
+- **Empty-message Send button click.** When the user clicks Send with an empty textarea, the chat surface MUST render an inline alert with the literal text "Type a message before sending." (no surrounding framing) that persists for 2 seconds and then auto-clears. The chat must NOT submit, MUST NOT call /api/chat, and MUST NOT clear the textarea. Both the Send button and the textarea remain available throughout.
 
-- **Textarea focus.** When the user focuses the chat textarea (click, tab, or programmatic), the placeholder text MUST change from "Type your plate and state, like \"XRJ4041 in Texas\"" to "Keyboard ready — type your plate and state" AND the textarea's aria-label MUST update to "Chat message (focused)". The focused state clears on blur, restoring the original placeholder.
+- **Textarea focus.** When the user focuses the chat textarea (click, tab, or programmatic), a visible caption "Active typing area — press Enter to send" MUST appear below the form. The placeholder text MUST change from "Type your plate and state, like \"XRJ4041 in Texas\"" to "Keyboard ready — type your plate and state" AND the textarea's aria-label MUST update to "Chat message (focused)". The caption and focused state all clear on blur.
 
 - **Mobile viewport (≤480px wide).** The chat container's CSS width MUST shrink to `min(720px, calc(100vw - 24px))` AND the chat header MUST visibly append "· compact mobile layout" so both layout and the layout-mode-indication are observable. The change is reversible: returning to desktop widths removes the indicator.
 

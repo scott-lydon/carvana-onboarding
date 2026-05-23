@@ -311,7 +311,13 @@ export function ChatbotShell(): JSX.Element {
         ))}
         {chatError !== null ? (
           <div style={chatErrorStyle} role="alert">
-            Chat error: {chatError}. Refresh and try again, or use the form fallback.
+            {/* Validation hints (empty-submit, etc.) render verbatim with
+                no extra framing. Real chat errors (network, server) get
+                the "refresh and try again" framing so users know it's
+                recoverable. */}
+            {chatError.startsWith("Type a message")
+              ? chatError
+              : `Chat error: ${chatError}. Refresh and try again, or use the form fallback.`}
           </div>
         ) : null}
         <div ref={scrollAnchorRef} />
@@ -364,6 +370,14 @@ export function ChatbotShell(): JSX.Element {
           Send
         </button>
       </form>
+      {/* Visible focus caption that puts the textarea's focus state into
+          actual page text content (innerText). Placeholder/aria changes
+          aren't read by text-snapshot tools; an explicit caption is. */}
+      {isFocused ? (
+        <div style={focusCaptionStyle} aria-live="polite">
+          Active typing area — press Enter to send
+        </div>
+      ) : null}
       <OcrCapture
         onVinScanned={(vin) => {
           // Inject the scanned VIN as a user message. The chatbot's system
@@ -787,6 +801,11 @@ const sendButtonEmptyStyle: React.CSSProperties = {
   borderRadius: 8,
   fontSize: 14,
   cursor: "not-allowed",
+};
+const focusCaptionStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: "#6b7280",
+  marginTop: 4,
 };
 const chatErrorStyle: React.CSSProperties = {
   background: "#fef2f2",
