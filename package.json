@@ -6,11 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "tsx watch --env-file-if-exists=.env.local server/index.ts",
     "dev:all": "concurrently -n client,server -c blue,magenta \"npm:dev\" \"npm:dev:server\"",
     "build": "tsc --noEmit && vite build",
     "build:server": "rm -rf dist-server && tsc --project server/tsconfig.json",
-    "start": "node dist-server/server/index.js",
+    "start": "node --env-file-if-exists=.env.local dist-server/server/index.js",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit --project server/tsconfig.json",
     "lint": "eslint . --max-warnings=0",
