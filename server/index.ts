@@ -143,17 +143,11 @@ if (ocrHandler === undefined) {
   );
 }
 
-// Static-serve the Vite build in production AFTER the /api routes are
-// registered so the API takes precedence over the SPA's index.html fallback.
-if (IS_PRODUCTION) {
-  app.use(express.static(FRONTEND_DIST));
-  app.get("*", (_req: Request, res: Response): void => {
-    res.sendFile(path.join(FRONTEND_DIST, "index.html"));
-  });
-}
-
 // v2 Slice C: scheduler endpoints backed by SQLite with atomic booking.
 // v2 Slice E: NPS micro-survey endpoints share the same SQLite instance.
+// REGISTERED BEFORE the SPA wildcard so /api/schedule/slots etc. don't
+// get intercepted by the static catch-all (a real bug found by vouch
+// depth-2: GET /api/schedule/slots returned index.html in production).
 const schedulerDb = getDefaultSchedulerDb();
 const slotsHandler = makeSlotsHandler(schedulerDb);
 const bookHandler = makeBookHandler(schedulerDb);
@@ -172,6 +166,17 @@ app.get("/api/nps/summary", (req: Request, res: Response): void => {
   npsSummaryHandler(req, res);
 });
 console.log("[server] /api/schedule/{slots,book} + /api/nps/{submit,summary} wired");
+
+// Static-serve the Vite build in production AFTER the /api routes are
+// registered so the API takes precedence over the SPA's index.html fallback.
+// The wildcard app.get("*") MUST be the last GET registered or it will
+// shadow every API GET that came after it.
+if (IS_PRODUCTION) {
+  app.use(express.static(FRONTEND_DIST));
+  app.get("*", (_req: Request, res: Response): void => {
+    res.sendFile(path.join(FRONTEND_DIST, "index.html"));
+  });
+}
 
 app.listen(PORT, () => {
   console.log(

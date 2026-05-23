@@ -94,6 +94,23 @@ export function OcrCapture({ onVinScanned }: OcrCaptureProps): JSX.Element {
       message:
         "Camera permission requested — accept the browser prompt to scan.",
     });
+    // Headless browsers (Playwright in CI, vouch's executor) often have
+    // no mediaDevices API at all. Check explicitly with a friendly
+    // message that suggests the upload fallback. We don't check
+    // typeof navigator === 'undefined' because TS's lib.dom guarantees
+    // navigator exists in browser contexts (and this component never
+    // runs SSR).
+    if (
+      (navigator.mediaDevices as MediaDevices | undefined) === undefined ||
+      typeof navigator.mediaDevices.getUserMedia !== "function"
+    ) {
+      setStatus({
+        kind: "error",
+        message:
+          "Camera not supported in this browser — use the upload option below to pick a VIN photo.",
+      });
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
