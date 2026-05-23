@@ -22,6 +22,8 @@ import type { FormEvent, JSX, KeyboardEvent } from "react";
 import { EntryForm } from "./EntryForm.tsx";
 import { OcrCapture } from "./OcrCapture.tsx";
 import { Scheduler } from "./Scheduler.tsx";
+import { NpsSurvey } from "./NpsSurvey.tsx";
+import { MetricsOverlay } from "./MetricsOverlay.tsx";
 
 /**
  * Anthropic message shape that the server expects in the POST body. We
@@ -100,12 +102,39 @@ export function ChatbotShell(): JSX.Element {
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   // Stable random session id for the lifetime of this chat. Used as the
-  // userId on /api/schedule/book so the booking is attributable. Memoized
-  // so it doesn't change across re-renders.
+  // userId on /api/schedule/book and the sessionId on /api/nps/submit so
+  // the booking and survey are attributable. Memoized so it doesn't
+  // change across re-renders.
   const chatSessionId = useMemo(
     () => `chat-${Math.random().toString(36).slice(2, 12)}`,
     [],
   );
+
+  // v2 slice E completion-time stopwatch. firstUserMessageAt is null
+  // until the user sends their first message; subsequent elapsed-time
+  // reads compute (now - firstUserMessageAt). npsPromptVisible flips on
+  // after a "Pickup booked: ..." user message lands, surfacing the NPS
+  // survey at the bottom of the transcript.
+  const [firstUserMessageAt, setFirstUserMessageAt] = useState<number | null>(
+    null,
+  );
+  const [npsPromptVisible, setNpsPromptVisible] = useState<boolean>(false);
+  const [npsSubmitted, setNpsSubmitted] = useState<boolean>(false);
+  // Ticks every second so the elapsed-seconds display + MetricsOverlay
+  // stay current without each component owning its own timer.
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setNowTick(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, []);
+  const elapsedSeconds =
+    firstUserMessageAt === null
+      ? 0
+      : Math.max(0, Math.round((nowTick - firstUserMessageAt) / 1000));
 
   // Auto-scroll the chat to the latest turn after each render.
   useEffect(() => {
@@ -120,6 +149,18 @@ export function ChatbotShell(): JSX.Element {
       }
       setChatError(null);
       setDraft("");
+
+      // Start the completion-time stopwatch on the FIRST user message.
+      if (firstUserMessageAt === null) {
+        setFirstUserMessageAt(Date.now());
+      }
+      // Flip the NPS prompt visible when the booking-confirmation
+      // pattern lands (sent by Scheduler.onPickupBooked). Slice E's
+      // 15-min-completion metric is read from the elapsed timer at this
+      // moment.
+      if (trimmed.startsWith("Pickup booked:") && !npsSubmitted) {
+        setNpsPromptVisible(true);
+      }
 
       // Append the user turn to the UI immediately so the user sees their
       // own message without waiting for the server.
@@ -169,7 +210,7 @@ export function ChatbotShell(): JSX.Element {
         setIsStreaming(false);
       }
     },
-    [isStreaming],
+    [isStreaming, firstUserMessageAt, npsSubmitted],
   );
 
   const handleSubmit = useCallback(
@@ -279,6 +320,16 @@ export function ChatbotShell(): JSX.Element {
           void sendMessage(`Pickup booked: ${displayLabel} at ${scope}`);
         }}
       />
+      {npsPromptVisible ? (
+        <NpsSurvey
+          sessionId={chatSessionId}
+          elapsedSeconds={elapsedSeconds}
+          onSubmitted={() => {
+            setNpsSubmitted(true);
+          }}
+        />
+      ) : null}
+      <MetricsOverlay elapsedSeconds={elapsedSeconds} />
     </div>
   );
 }

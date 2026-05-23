@@ -25,6 +25,7 @@ import { isChatConfigured, makeChatHandler } from "./routes/chat.js";
 import { isOcrConfigured, makeOcrHandler } from "./routes/ocr.js";
 import { getDefaultSchedulerDb } from "./scheduler/db.js";
 import { makeBookHandler, makeSlotsHandler } from "./routes/schedule.js";
+import { makeNpsSubmitHandler, makeNpsSummaryHandler } from "./routes/nps.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -152,16 +153,25 @@ if (IS_PRODUCTION) {
 }
 
 // v2 Slice C: scheduler endpoints backed by SQLite with atomic booking.
+// v2 Slice E: NPS micro-survey endpoints share the same SQLite instance.
 const schedulerDb = getDefaultSchedulerDb();
 const slotsHandler = makeSlotsHandler(schedulerDb);
 const bookHandler = makeBookHandler(schedulerDb);
+const npsSubmitHandler = makeNpsSubmitHandler(schedulerDb);
+const npsSummaryHandler = makeNpsSummaryHandler(schedulerDb);
 app.get("/api/schedule/slots", (req: Request, res: Response): void => {
   slotsHandler(req, res);
 });
 app.post("/api/schedule/book", (req: Request, res: Response): void => {
   bookHandler(req, res);
 });
-console.log("[server] /api/schedule/{slots,book} wired");
+app.post("/api/nps/submit", (req: Request, res: Response): void => {
+  npsSubmitHandler(req, res);
+});
+app.get("/api/nps/summary", (req: Request, res: Response): void => {
+  npsSummaryHandler(req, res);
+});
+console.log("[server] /api/schedule/{slots,book} + /api/nps/{submit,summary} wired");
 
 app.listen(PORT, () => {
   console.log(
