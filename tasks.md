@@ -2,9 +2,81 @@
 
 > Sliced, actionable, checkbox-tracked. Each slice maps to a user story in `spec.md` and a component in `plan.md`. Each task names the rubric line it advances. Done-criteria are tiny acceptance tests the qa-adversary can replay.
 
-## Current slice
+## v2 PRD slice plan (2026-05-22) — AUTHORITATIVE for the 2-day rebuild
 
-### Slice 2 — bot-detected differentiation copy + OCR fallback path (next up)
+> Carvana updated the PRD to prescribe four AI surfaces (chatbot, OCR, scheduling, emotional support content), four metrics (40% completion lift, 15-min process, NPS 70+, p95 <3 s), and a 2-day time budget. The v1 slice plan (slices 2-8 below in "Deferred under v2") was sized for one week. v2 collapses the remaining work into 7 slices over 2 days.
+
+### v2 Day 1 — chatbot + OCR + scheduler spine
+
+#### v2 Slice A — ChatbotShell + /api/chat + tool-use over existing VendorCascade
+- [ ] **A.1** Install `@anthropic-ai/sdk` if not already present. Done: `npm ls @anthropic-ai/sdk` shows the package.
+- [ ] **A.2** Add `ANTHROPIC_API_KEY` to `.env.example` and `.env.local`; document in README. Done: server starts and reports the key presence in a startup log line (NOT the key itself).
+- [ ] **A.3** `server/chat/system-prompt.ts` — sell-side onboarding assistant persona, instructions to use tools, instructions to NEVER echo PII in free text (CAT-11). Done: exported as `SYSTEM_PROMPT` constant.
+- [ ] **A.4** `server/chat/tools.ts` — tool definitions for `lookup_plate`, `lookup_vin`, `ocr_recognize` (stub for slice B), `schedule_pickup` (stub for slice C), `get_support_content` (stub for slice D), `generate_offer` (mock). Done: `tests/integration/tool-schema.test.ts` passes (CAT-17).
+- [ ] **A.5** `server/routes/chat.ts` — POST handler, streams `client.messages.stream({ model: 'claude-sonnet-4-5', tools, system, messages })`, handles tool-use turns by dispatching to existing route handlers, posts tool-result blocks. Done: `Transfer-Encoding: chunked` set; first-token p50 under 1.5 s in `tests/integration/chat-streaming.test.ts` (CAT-13).
+- [ ] **A.6** `src/components/ChatbotShell.tsx` — chat history, message input, send button, streamed-response renderer, tool-use UI affordance (renders vehicle data card inline when `lookup_plate` returns Resolved). Done: Playwright `tests/e2e/v2-chatbot-plate-happy-path.spec.ts` types "my plate is XRJ4041 in Texas" and asserts vehicle data appears within 3 s.
+- [ ] **A.7** Mount ChatbotShell as primary surface in `src/App.tsx`; demote EntryForm to a fallback link ("prefer a form? click here"). Done: dev server greets with chatbot; form is accessible via link.
+- [ ] **A.8** Invoke qa-adversary against slice A in fresh context. Done: report at `docs/qa-reports/slice-A.md` with PASS verdict (or fixes applied to reach PASS).
+- [ ] **A.9** Submit-gate at end of slice-A response.
+
+#### v2 Slice B — OcrCapture + Claude vision swap-in
+- [ ] **B.1** `server/routes/ocr.ts` — accept multipart image upload, call Anthropic Messages API with `claude-sonnet-4-5` and the image content block, system prompt: "extract the VIN from this image; respond with only the 17-character VIN or 'NOT_FOUND'." Done: integration test posts a known VIN-sticker fixture image, asserts the correct VIN is returned.
+- [ ] **B.2** `src/components/OcrCapture.tsx` — `getUserMedia` permission request, viewfinder with VIN-rectangle overlay, capture button, client-side crop to the overlay, POST to `/api/ocr/recognize`. Done: Playwright scenario with a fixture image asserts the OCR result is returned to the client.
+- [ ] **B.3** Wire `ocr_recognize` tool dispatch in `/api/chat` to call into OcrCapture flow when the chatbot invokes the tool. Chatbot's UI affordance: render the camera card inline. Done: Playwright scenario where the chatbot asks for a VIN photo, fixture image is fed, VIN extracts, chatbot confirms.
+- [ ] **B.4** Drop Google Cloud Vision dependencies if any were installed. Done: `package.json` does not list any `@google-cloud` packages.
+- [ ] **B.5** qa-adversary on slice B; submit-gate.
+
+#### v2 Slice C — Scheduler + atomic SQLite booking
+- [ ] **C.1** SQLite schema: `appointments(slot_start TIMESTAMP, scope TEXT, status TEXT, created_at TIMESTAMP, UNIQUE(slot_start, scope))`. Done: migration script creates table.
+- [ ] **C.2** `server/scheduler/slots.ts` — `availableSlots(zip, dayRange)` returns deterministic slots (next 14 days, 8 slots/day 9 AM-5 PM, minus already-booked from SQLite). Done: unit test.
+- [ ] **C.3** `server/scheduler/atomicity.ts` — `bookSlot(slotStart, scope)` wraps in `BEGIN IMMEDIATE`, attempts INSERT, returns success or conflict. Done: `tests/integration/scheduler-concurrency.test.ts` fires 10 parallel bookings of same slot, asserts exactly 1 success (CAT-14).
+- [ ] **C.4** `server/routes/schedule.ts` — GET `/api/schedule/slots` + POST `/api/schedule/book`. Done: integration test covers happy path and conflict path.
+- [ ] **C.5** `src/components/Scheduler.tsx` — weekly grid component, slot click → POST book → optimistic update + server confirmation, conflict shows "that slot just got taken, here are alternatives." Done: Playwright covers both happy and conflict paths.
+- [ ] **C.6** Wire `schedule_pickup` tool dispatch in `/api/chat`; chatbot UI renders Scheduler inline after the offer step. Done: Playwright full happy path: chatbot → plate → vehicle → offer → schedule → booked.
+- [ ] **C.7** qa-adversary on slice C; submit-gate.
+
+### v2 Day 2 — emotional support + metrics + perf + polish
+
+#### v2 Slice D — SupportContentWidget + pre-baked cards + anxiety-signal detection
+- [ ] **D.1** `src/support-content/cards.ts` — 5 cards: `OfferDropAnxiety`, `DataPrivacy`, `WalkAwayPolicy`, `InspectionExpectations`, `PaymentTiming`. Each: short title, 60-80 word body, telemetry event name. Done: TypeScript union type `SupportTopic` enumerates all 5.
+- [ ] **D.2** `src/components/SupportContentWidget.tsx` — render the card matching a given `SupportTopic`. Done: `tests/components/SupportContentWidget.test.tsx` mocks each topic and asserts byte-for-byte match against the committed card body (CAT-12).
+- [ ] **D.3** Wire `get_support_content` tool dispatch in `/api/chat`; chatbot UI renders SupportContentWidget inline. System prompt updates to instruct the chatbot to invoke `get_support_content` when anxiety signals are detected (uncertainty, "what if" questions, hesitation). Done: Playwright simulates "what if my offer drops at pickup?" asserts the OfferDropAnxiety card renders.
+- [ ] **D.4** qa-adversary on slice D; submit-gate.
+
+#### v2 Slice E — NpsSurvey + completion-time stopwatch + metrics overlay
+- [ ] **E.1** `src/components/NpsSurvey.tsx` — 0-10 score buttons, free-text follow-up, submit. Renders after the schedule-confirmed screen. Done: component test covers all scores.
+- [ ] **E.2** Client-side stopwatch: record first chat message timestamp on mount, compute elapsed time at NPS-submit. Done: stopwatch reads correct elapsed time in Playwright happy-path test.
+- [ ] **E.3** `server/routes/nps.ts` — POST `/api/nps/submit` writes (score, comment, elapsed_seconds, timestamp) to SQLite `nps` table. Done: integration test.
+- [ ] **E.4** Dev-only on-page metrics overlay (toggleable via `?metrics=1` query param) showing current chatbot first-token latency, total flow elapsed time, NPS average. Done: visible when query param is set, hidden otherwise.
+- [ ] **E.5** qa-adversary on slice E; submit-gate.
+
+#### v2 Slice F — k6 perf load test + Render service pinning
+- [ ] **F.1** `scripts/perf/load.k6.js` — 60-second load test, 20 virtual users, hits `/api/chat` (mocked Anthropic on the test side so the test isolates server perf not LLM latency) + `/api/lookup/plate` + `/api/schedule/slots`. Reports p95 latency per endpoint. Done: script runs locally and emits JSON summary.
+- [ ] **F.2** `npm run perf:smoke` (10s, 5 VU) and `npm run perf:load` (60s, 20 VU) added to `package.json`. Done: both commands run.
+- [ ] **F.3** Pin Render service to "starter" paid tier OR document the pre-warm procedure in `docs/perf-report.md`. Done: tier change confirmed in Render dashboard screenshot or pre-warm runbook is in the doc.
+- [ ] **F.4** Run `npm run perf:load` against the deployed Render URL; capture p95 per endpoint; commit `docs/perf-report.md` with the numbers + the target URL + the date. Done: report exists with p95 < 3 s for all hot endpoints (CAT-16).
+- [ ] **F.5** qa-adversary on slice F; submit-gate.
+
+#### v2 Slice G — architecture website + defense breakout + AI interview prep + demo video
+- [ ] **G.1** `website/index.html` refresh — Mermaid diagram of v2 topology (chatbot as orchestrator, tools as services), Simple Icons logos for Anthropic / Claude / React / TypeScript / Vite / Express / Node / Render / SQLite / GitHub / GitLab, no edge crossings; decision table v2; trade-offs v2; cost chart (Anthropic pricing + Render starter tier); tech stack grid v2. Done: page loads, diagrams render, all icons load.
+- [ ] **G.2** `docs/DEFENSE_BREAKOUT_SCRIPT.md` — 5-minute spoken script, substance only, no meta about format. Threads: chatbot tool-use over VendorCascade, Claude vision in place of Google Cloud Vision, atomic scheduling, pre-baked support content. Done: 4-4:30-min spoken pace by user, no scheduling-overreach language.
+- [ ] **G.3** `docs/AI_INTERVIEW_PREP.md` update — portal link at top, elevator pitch updated for v2, four rubric anchors updated (chatbot, atomic scheduler, PII-via-tool-use, k6 perf report), 12+ prepared answers, recurring questions from `~/Documents/Claude/Projects/Gauntlet/AI_INTERVIEW_QUESTION_LOG.md` at top of bank. Done: file exists with the structure mandated in CLAUDE.md.
+- [ ] **G.4** Record 60-second demo video per the v2 demo script in `spec.md`. Done: file at `docs/demo-v2.mp4` (or equivalent).
+- [ ] **G.5** Final qa-adversary on the deployed Render URL against the v2 end-to-end pipeline command. Done: report at `docs/qa-reports/v2-final.md` with PASS verdict.
+- [ ] **G.6** Submit-gate at end of slice G response = final submit-gate for v2.
+
+### v2 standing rules (apply to every v2 slice)
+
+- qa-adversary in fresh context at slice end, briefed against v2-updated constitution + spec + plan + tasks + QA_ADVERSARY.
+- Submit-gate at end of every code-touching response.
+- Dual-push remote check on every push: `git ls-remote origin main` and `git ls-remote gitlab main` must return matching hashes.
+- Vendor APIs (Anthropic, CarsXE) hit live sandboxes in integration tests, gated by env flags. Mocked Anthropic is permitted ONLY for the streaming-timing test (where the assertion is about the stream shape, not LLM behavior).
+
+---
+
+## v1 Current slice (DEFERRED under v2; preserved for git-history continuity)
+
+### Slice 2 — bot-detected differentiation copy + OCR fallback path (DEFERRED)
 
 (Slice 1 is COMPLETE and live at <https://carvana-onboarding.onrender.com>; see "Done slices" section below.)
 

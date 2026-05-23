@@ -1,7 +1,114 @@
 # Plan — Carvana Onboarding Recovery Layer
 
 > Architecture. Component breakdown. Data flow. Decisions. Trade-offs. Sequencing.
-> Last edited 2026-05-22.
+> Last edited 2026-05-22 (v2 PRD update; v2 architecture below is AUTHORITATIVE for the next 2 days; v1 content is preserved further down).
+
+---
+
+## v2 architecture (2026-05-22) — AUTHORITATIVE for the 2-day rebuild
+
+### v2 topology (text)
+
+```
+Browser
+  ├─ React app (Vite + TypeScript)
+  │    ├─ ChatbotShell (Anthropic streaming, tool-use orchestrator)   [NEW]
+  │    ├─ OcrCapture (getUserMedia → cropped image → server)          [renamed from OCRCapture]
+  │    ├─ Scheduler (weekly slot grid, atomic booking)                [NEW]
+  │    ├─ SupportContentWidget (pre-baked empathy interstitials)      [NEW]
+  │    ├─ NpsSurvey (post-flow micro-survey + free text)              [NEW]
+  │    ├─ EntryForm (kept as fallback escape hatch from chatbot)
+  │    └─ DegradationPanel (preserved from v1; chatbot calls into it for vendor failures)
+  │
+Server (Express on Node 22)
+  ├─ /api/chat        ──── streams ──► Anthropic Messages (Claude Sonnet 4.5)
+  │                              └─► tools: lookup_plate, lookup_vin, ocr_recognize, schedule_pickup, get_support_content
+  ├─ /api/lookup/plate ──► VendorCascade [CarsXE primary, VinAudit fallback when live]
+  ├─ /api/lookup/vin   ──► same VendorCascade
+  ├─ /api/ocr/recognize ─► Anthropic Messages (Claude vision)         [SWAPPED from Google Cloud Vision]
+  ├─ /api/schedule/slots (GET available slots for a zip + 14-day window)
+  ├─ /api/schedule/book  (POST atomic slot allocation, SQLite transaction)
+  ├─ /api/nps/submit (POST NPS score + free text + completion-time stopwatch)
+  └─ /api/events (telemetry; unchanged from v1)
+```
+
+The polished Mermaid version with Simple Icons logos for Anthropic, React, TypeScript, Vite, Express, Node, Render, SQLite, CarsXE, GitHub, GitLab lives in `website/index.html` per the Gauntlet pattern; no edge crossings, layout reordered for the v2 chat-centric flow.
+
+### v2 components (new, modified, or dropped relative to v1)
+
+**ChatbotShell (NEW).** React component that owns the chat history, sends user messages to `/api/chat`, streams responses, renders tool-use UI affordances (vehicle data card, OCR camera card, scheduler card, support content card). Streaming via SSE or fetch+ReadableStream — chosen on slice A. The chatbot is the primary entry surface; EntryForm is a fallback link ("prefer a form? click here").
+
+**ChatRouter (NEW, server-side, inside /api/chat).** Validates each user turn, calls `client.messages.stream({ model: 'claude-sonnet-4-5', tools: [...], messages: history })`, handles tool-use turns by dispatching to the existing route handlers (lookup, ocr, schedule) and posting tool-result blocks back. Tool definitions live in `server/chat/tools.ts`. System prompt lives in `server/chat/system-prompt.ts` and is one of the few hand-tuned strings in the repo.
+
+**OcrCapture (modified, was OCRCapture).** Camera capture via `getUserMedia` + crop overlay + capture button. Server-side recognition now via Claude vision (not Google Cloud Vision). The chatbot triggers the camera card via tool-use when a vendor cascade exhausts OR when the user proactively asks "can I just take a photo?"
+
+**Scheduler (NEW).** Two pieces: (a) `<Scheduler>` React component rendering a weekly grid of 30-min slots over the next 14 days with availability colors, (b) server-side atomic slot allocation backed by SQLite with `BEGIN IMMEDIATE` transaction + UNIQUE constraint on (slot_start, scope) to prevent double-booking under concurrent requests. Slot generation is deterministic from `(zip, day)` → 8 slots/day between 9 AM and 5 PM. Hub locations are hardcoded for the demo (3 Texas Carvana hubs).
+
+**SupportContentWidget (NEW).** Pre-baked content cards keyed by `SupportTopic` enum: `OfferDropAnxiety`, `DataPrivacy`, `WalkAwayPolicy`, `InspectionExpectations`, `PaymentTiming`. Each card has a short title, 60-80 word body, and a stable telemetry event name. Content is reviewed and committed; LLM does NOT generate the body at runtime (constitutional non-negotiable — see v2 constitution delta).
+
+**NpsSurvey (NEW).** Single-screen widget rendered after pickup is booked. Captures the 0-10 score, a free-text "what's the one thing that would make this better" prompt, and the total flow duration (computed client-side from the first chat message). Posts to `/api/nps/submit`; results aggregated for the metric overlay on the architecture website.
+
+**VendorCascade (UNCHANGED).** Live from slice 1, CarsXE primary, VinAudit fallback pending B2B approval, 8-second timeout per adapter, 14 unit tests + property tests. Chatbot invokes this via tool-use rather than the user invoking it via a form.
+
+**DegradationPanel (UNCHANGED).** Live from slice 1, error-to-copy mapping for resolved/not_found/transient_error/bot_detected/format_error/configuration_missing. Chatbot calls into this via tool-use when a cascade misses.
+
+**PrequalEstimator (DROPPED for v2).** Buy-side only; out of v2 scope.
+
+**ConsentManager (DROPPED for v2).** Buy-side TCPA SMS opt-in; sell-side has lower TCPA exposure.
+
+### v2 data flow (chatbot orchestrates the entire happy path)
+
+1. Seller opens prototype → ChatbotShell mounts, greets, asks for plate + state.
+2. Seller types or speaks. Client sends message to `/api/chat`.
+3. ChatRouter streams `client.messages.stream` with full history + tool definitions.
+4. Claude responds with `tool_use` block invoking `lookup_plate({ plate, state })`.
+5. ChatRouter dispatches to VendorCascade, gets `LookupResult`, posts `tool_result` back to stream.
+6. Claude continues with vehicle-confirmation message + asks 6-10 condition questions one by one.
+7. After condition Q&A, Claude generates condition tier and invokes a (mock-for-demo) `generate_offer` tool that returns an offer range.
+8. Claude offers pickup booking; seller agrees; Claude invokes `schedule_pickup({ zip, day_range })` which returns available slots.
+9. Scheduler component renders inline; seller picks a slot; client posts to `/api/schedule/book` (atomic).
+10. Claude confirms; NpsSurvey renders; seller scores + comments; `/api/nps/submit` records.
+
+If at ANY step a vendor call fails, ChatRouter posts the failure result to Claude with structured fields; Claude routes through DegradationPanel copy AND optionally invokes `get_support_content` if anxiety signals are detected.
+
+### v2 decisions table (additive to v1)
+
+| Decision | What we chose | Alternative considered | Why |
+|---|---|---|---|
+| Chatbot LLM | Claude Sonnet 4.5 (orchestrator) + Claude Haiku 4.5 (cheap tool-result summarization if needed) | OpenAI GPT-4.1, Gemini 2.5 Pro | One vendor for chatbot AND vision (Claude vision) cuts a key. Anthropic's tool-use is mature and well-documented. Streaming is well-supported. |
+| Vision provider | Claude vision (same Anthropic surface) | Google Cloud Vision, Tesseract.js, AWS Textract | One vendor, one billing relationship, one API key, fewer secrets to rotate. Cloud Vision is a great product; cutting it saves config and money at our scale. |
+| Scheduling primitive | In-house calendar grid + SQLite atomic booking | Cal.com (self-host or hosted), Calendly embed | In-house grid: 1 day to ship, full UX control, no third-party tenant config, atomic booking story is part of the rubric defense. Cal.com is more featureful but ships slower and the demo doesn't need the full Cal.com surface. |
+| Streaming transport | fetch + ReadableStream (no SSE library) | EventSource (SSE), WebSocket, Vercel AI SDK | Vanilla fetch + ReadableStream works on Render's free tier without sticky-session config; Vercel AI SDK would add a dependency for a benefit we don't need. |
+| Support content authoring | Pre-baked, reviewed, committed | LLM-generated at runtime | Hallucination risk on emotional content is unacceptable. Pre-baked content is auditable, A/B-testable, and citable. The CHATBOT can pick which pre-baked card to show; the LLM does not write the words. |
+| Scheduling UI placement | Inline in chat (card) vs full-screen takeover | Modal popup | Inline keeps the conversation visible (the chatbot's reassurance copy stays on screen while the user picks a slot). Modal popup would push the chat off screen. |
+| Atomic slot allocation | SQLite `BEGIN IMMEDIATE` + UNIQUE constraint | Postgres advisory lock, Redis SETNX, ETag CAS | SQLite is already in the stack for events. `BEGIN IMMEDIATE` + UNIQUE is the simplest correct pattern. Demo concurrency is low. |
+
+### v2 trade-offs
+
+- **Chatbot adds first-token latency.** Mitigation: stream responses (perceived latency is time-to-first-token, not total). Pre-cache the greeting message client-side so the first paint is instant.
+- **Claude vision is more expensive than Tesseract.** Mitigation: it's more accurate and we can crop the image client-side to minimize tokens. At demo scale (<100 calls) the cost is under $1.
+- **In-house scheduler ships less polished than Cal.com.** Mitigation: scope the calendar grid to "next 14 days, 8 slots/day, 1 location selector" — that's a 1-day build that looks intentional.
+- **Pre-baked support content is rigid.** Mitigation: the chatbot's LLM can REPHRASE the pre-baked content in its own voice as long as the underlying facts (offer-drop stats, walk-away policy) are not changed. Treat the pre-baked content as facts the chatbot must cite.
+- **No buy-side coverage in v2.** Mitigation: explicit "v2 scope" callout in the architecture website + AI interview prep block explaining the 2-day collapse and the engineering decision to do sell-side excellently rather than both shallowly.
+
+### v2 slice sequencing (informs `tasks.md`)
+
+Day 1 (chatbot + OCR + scheduler spine):
+- Slice A: ChatbotShell + /api/chat with Claude Sonnet 4.5 + tool definitions for existing VendorCascade. Demo: type "my plate is XRJ4041 in Texas," get vehicle data in chat.
+- Slice B: OcrCapture wired into chatbot tool-use; Claude vision swap-in for `/api/ocr/recognize`. Demo: chatbot offers camera; capture VIN; chatbot confirms.
+- Slice C: Scheduler component + atomic SQLite booking + chatbot tool. Demo: after offer, chatbot offers slots; seller picks; booking confirmed.
+
+Day 2 (emotional support + metrics + perf + polish):
+- Slice D: SupportContentWidget + 5 pre-baked cards + chatbot detection of anxiety signals.
+- Slice E: NpsSurvey widget + completion-time stopwatch + /api/nps/submit + on-page metrics overlay.
+- Slice F: k6 load test (`scripts/perf/load.k6.js`) + p95 report at `docs/perf-report.md` + Render service pinned to "starter" paid tier.
+- Slice G: Architecture website refresh + DEFENSE_BREAKOUT_SCRIPT.md + AI_INTERVIEW_PREP.md update + 60-second demo video recording per v2 spec.md demo script.
+
+Each slice ends with `qa-adversary` in a fresh context briefed against the v2-updated constitution + spec + plan + tasks + QA_ADVERSARY. Submit-gate runs at the end of every code-touching response.
+
+---
+
+## v1 content (below this line — kept for git-history continuity, NOT authoritative for v2)
 
 ## Topology (text)
 

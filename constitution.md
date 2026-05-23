@@ -73,3 +73,51 @@ The repo follows the equivalent of the Google Swift Style Guide adapted to TypeS
 - **Scalability pillar:** vendor cascade with timeouts / circuit breakers; OCR moves to client where possible; the architecture handles Carvana's 35M monthly visits / 3M monthly plate attempts (see `research/carvana-business-case.md`).
 - **Security pillar:** DPPA boundary enforced at the type level, on-device OCR preferred, no raw PII in logs, TCPA-compliant consent.
 - **Testing pillar:** property-based tests for the cascade (every vendor permutation), Playwright covering each named failure mode from S1-S6 and B0-B8, qa-adversary sub-agent on every change.
+
+---
+
+## v2 PRD tech-stack and non-negotiables delta (2026-05-22, AUTHORITATIVE for the 2-day rebuild)
+
+### v2 tech stack additions
+
+- **LLM orchestrator:** Anthropic Messages API with **Claude Sonnet 4.5** (`claude-sonnet-4-5`) as the chatbot orchestrator. Streaming via fetch + ReadableStream (no SSE library, no Vercel AI SDK). Tool-use API for invoking VendorCascade, OcrService, Scheduler, SupportContent.
+- **Vision provider:** **Claude vision** (same Anthropic surface, multimodal Messages API). Replaces Google Cloud Vision from v1. Single vendor for chatbot + vision means one billing relationship, one API key, one rotation cadence.
+- **Optional cheap path:** **Claude Haiku 4.5** (`claude-haiku-4-5-20251001`) for tool-result summarization or post-flow NPS analysis if Sonnet is overkill for those tasks.
+- **Scheduling persistence:** SQLite (already in stack for events) with `BEGIN IMMEDIATE` transactions + UNIQUE constraint on (slot_start, scope) for atomic slot allocation.
+- **Perf tooling:** k6 (`brew install k6`) for the load test reporting p95 latency under load.
+
+### v2 tech stack removals
+
+- **Google Cloud Vision** dropped (replaced by Claude vision; one vendor, less config).
+- **Cal.com / Calendly embed** rejected (in-house scheduler ships faster and gives full UX control).
+- **PrequalEstimator** dropped (buy-side, out of v2 scope).
+- **ConsentManager** dropped (buy-side TCPA opt-in, out of v2 scope).
+- **Native iOS Vision OCR demo** dropped from v2 deliverables (the on-device privacy slide is out; the Anthropic vision swap is the new privacy story: image stays in our stack, no third-party vision vendor).
+
+### v2 non-negotiables (additive to the v1 list above)
+
+9. **Chatbot LLM never sees raw PII in free text.** Every PII field (plate, VIN, driver license, address) flows through the chatbot ONLY as a tool-use input or output. The user's typed plate becomes a `lookup_plate({plate})` tool call argument; the chatbot's reply contains the resolved vehicle, not the plate. We never put plate / VIN / address into the system prompt or into the assistant's narrative text. Rationale: prompt-injection resistance + audit trail clarity + minimizing what an upstream observer can scrape from logs.
+
+10. **Pre-baked support content only.** SupportContentWidget renders content authored by humans, reviewed, and committed to the repo. The LLM picks WHICH card to show via tool-use; the LLM does NOT generate the card body at runtime. Hallucinated emotional reassurance ("Carvana never reduces offers, ever!") is a legal and trust risk that we eliminate at the architecture level.
+
+11. **Streaming or bust for chat.** Every `/api/chat` response streams to the client. First-token latency < 1.5 s at p95; the perceived-latency story is the streaming. A non-streamed response is a regression.
+
+12. **Atomic slot allocation.** Two concurrent bookings of the same slot MUST fail one of them with a clear "that slot just got taken, here are the next 3 alternatives" message. No double-booking under any circumstances. Test: `tests/integration/scheduler-concurrency.test.ts` fires 10 parallel bookings of the same slot, asserts exactly 1 success and 9 well-formed conflict errors.
+
+13. **NPS data is real or labeled.** The NpsSurvey widget collects real responses during the demo. The pitch deck slide that reports NPS distinguishes between "n demo respondents this week (real)" and "comparable products' published NPS using this onboarding pattern (cited)." We never average the two together or hide the n.
+
+14. **Perf-test the deployed instance, not the dev server.** The k6 report at `docs/perf-report.md` is generated against `https://carvana-onboarding.onrender.com`. Render service is pinned to "starter" paid tier (or pre-warmed before the run) to dodge cold-start. p95 is reported, not median.
+
+### v2 things we still NEVER do (additive to the v1 list)
+
+- Generate empathy / reassurance copy at chat runtime. (Pre-baked only; see non-negotiable #10.)
+- Put plate / VIN / address into the LLM's free-text response or system prompt. (Tool-use only; see non-negotiable #9.)
+- Report median latency when the SLA is p95.
+- Demo against the dev server when the SLA is "under load on the deployed instance."
+
+### v2 rubric anchor (supplements the v1 anchor above)
+
+- **Architecture pillar (v2):** chatbot-as-orchestrator pattern with tool-use over the existing VendorCascade. The chatbot is the user-facing surface; the v1 services are the tools. Adding a capability means adding a tool, not re-architecting.
+- **Scalability pillar (v2):** streamed responses (low first-token p95) + atomic slot allocation (no double-booking under load) + the existing VendorCascade timeouts.
+- **Security pillar (v2):** PII-via-tool-use-only (no PII in LLM free text) + pre-baked support content (no hallucinated reassurance) + same DPPA boundary from v1.
+- **Testing pillar (v2):** all v1 tests + tool-use property tests (chatbot's tool-use order matches the spec'd flow) + scheduler concurrency test + k6 load test.

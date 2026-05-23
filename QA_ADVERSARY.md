@@ -107,3 +107,53 @@ If that command exits zero, the slice has not regressed against the above bug ca
 - `~/Documents/Claude/Projects/Gauntlet/qa-pipeline.html` — design rationale for fresh-context adversary.
 - `constitution.md` — the non-negotiables this adversary enforces.
 - `research/walkthrough-findings.md` — the Carvana failure modes this prototype must NOT replicate.
+
+---
+
+## v2 PRD delta (2026-05-22) — AUTHORITATIVE for the 2-day rebuild
+
+### v2 hot files (where v2 bugs will concentrate)
+
+- `src/components/ChatbotShell.tsx` — streaming, message history, tool-use UI affordances, error rendering inside the chat
+- `server/routes/chat.ts` — Anthropic API call, tool dispatch, streaming back to client, error handling on tool failures
+- `server/chat/tools.ts` — tool definitions; mismatch between tool schema and the dispatch handler is a silent class of bugs
+- `server/chat/system-prompt.ts` — the system prompt is the spec for the chatbot's behavior; drift between prompt and actual behavior is a v2-specific bug surface
+- `src/components/Scheduler.tsx` — slot rendering, slot selection, optimistic update vs server confirmation, conflict UI
+- `server/routes/schedule.ts` — atomic slot allocation; concurrency bugs hide here
+- `src/components/OcrCapture.tsx` — camera permission flow, crop overlay, capture-to-bytes path
+- `server/routes/ocr.ts` — Claude vision call, image-to-tokens conversion, confidence threshold
+- `src/components/SupportContentWidget.tsx` — card-by-topic rendering
+- `src/components/NpsSurvey.tsx` — score selection, free text capture, submission
+- `server/routes/nps.ts` — NPS row insert, completion-time recording
+
+### v2 named bug categories (additive to CAT-1 through CAT-10)
+
+**CAT-11 — LLM free-text contains PII (constitutional non-negotiable #9).** Any chatbot response that echoes back the user's plate, VIN, driver license number, or address inside the LLM's narrative text (not as a structured tool-result) is a CAT-11 regression. Test: `tests/adversary/CAT-11-pii-in-free-text.spec.ts` walks the chatbot through a full happy path, captures every assistant message, asserts no message body contains the plate or VIN as a substring (the UI may render them, but the LLM's text must not).
+
+**CAT-12 — LLM-generated empathy content (constitutional non-negotiable #10).** Any SupportContentWidget render that displays text not present in the committed `src/support-content/cards.ts` file is a CAT-12 regression. Test: `tests/components/SupportContentWidget.test.tsx` mocks the chatbot's tool-call asking for a specific topic, asserts the rendered text matches the committed card body byte-for-byte.
+
+**CAT-13 — Non-streamed chat response (constitutional non-negotiable #11).** Any `/api/chat` response that is not chunked-transfer-encoded streaming is a CAT-13 regression. Test: `tests/integration/chat-streaming.test.ts` issues a chat request, asserts `Transfer-Encoding: chunked` is set, asserts first token arrives within 1.5 s (mocked Anthropic stream for the assertion-timing test).
+
+**CAT-14 — Double-booked scheduler slot (constitutional non-negotiable #12).** Two parallel requests booking the same slot that both return success is a CAT-14 regression. Test: `tests/integration/scheduler-concurrency.test.ts` fires 10 parallel bookings of the same slot, asserts exactly 1 success and 9 conflict errors.
+
+**CAT-15 — NPS demo data not labeled.** Any pitch slide or dashboard that reports an NPS number without labeling the n and source (real demo respondents vs cited industry comparable) is a CAT-15 regression. This is content review, not code, but the adversary checks the architecture website + AI interview prep file for this.
+
+**CAT-16 — Perf test against dev server.** Any reported p95 latency number in `docs/perf-report.md` or the pitch deck that was measured against the local dev server (port 5173 / 8787) rather than the deployed Render URL is a CAT-16 regression. Check: the perf-report.md should include the target URL it was measured against.
+
+**CAT-17 — Chatbot tool-use schema drift.** Any tool defined in `server/chat/tools.ts` whose JSON schema does not match the handler's accepted arguments is a CAT-17 regression. Test: `tests/integration/tool-schema.test.ts` parses each tool definition, attempts a representative dispatch, asserts no validation errors on the handler side.
+
+### v2 end-to-end pipeline command (updated)
+
+```
+npm run typecheck && npm run lint && npm run test:all && npm run perf:smoke
+```
+
+Where `npm run perf:smoke` is a 10-second k6 run that produces a smoke-level perf check (the full load test is `npm run perf:load`, runs against deployed only, not in CI).
+
+### v2 ignored paths (additive)
+
+- `src/support-content/cards.ts` — content file, reviewed manually, not subject to drift-testing beyond CAT-12 byte-for-byte match.
+
+### v2 base branch for diff
+
+Still `main`. For v2 slices, diff the slice branch against the most recent v1 main commit OR the v2 baseline commit (which will be tagged `v2-baseline` after the artifact updates land).

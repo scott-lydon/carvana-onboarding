@@ -1,7 +1,89 @@
 # Spec — Carvana Onboarding Recovery Layer
 
 > What we are building and why. User stories. Acceptance criteria. Demo script.
-> Last edited 2026-05-22.
+> Last edited 2026-05-22 (v2 PRD update; the v2 section below is AUTHORITATIVE for the next 2 days; v1 content is preserved below for git-history continuity but is not authoritative).
+
+---
+
+## v2 PRD (2026-05-22) — AUTHORITATIVE for the 2-day rebuild
+
+### v2 problem statement
+
+Carvana's sell-side trade-in onboarding leaks users at four named moments (plate-lookup blame-the-user, VIN-submission silent reset, multi-screen condition questionnaire fatigue, no-pickup-time-after-offer dead end). The v2 PRD prescribes four AI surfaces that, together, become a conversational concierge that walks the seller from "I want to sell my car" to "pickup booked for Saturday 10 AM at my address," with photo capture for the data the seller would otherwise type, empathy interstitials at the known anxiety moments, and honest recovery copy when vendors fail.
+
+### v2 functional requirements (verbatim from Carvana PRD)
+
+1. **AI Assessment Module with LLM-powered chatbot capabilities.** Conversational onboarding shell that drives the entire sell-side flow as a chat instead of a multi-screen form. Uses Anthropic Messages API with Claude Sonnet 4.5 as the orchestrator and tool-use to invoke VendorCascade for plate/VIN lookups, OcrService for photo capture, Scheduler for pickup booking, and SupportContent for empathy interstitials.
+
+2. **Image-to-Text Data Entry functionality for document processing.** Browser camera capture (`getUserMedia`) of VIN sticker, registration card, insurance card, and (optional) driver license. Server-side recognition uses Claude vision (same Anthropic surface as the chatbot, cuts the Google Cloud Vision vendor). Recognized fields auto-fill the chat context.
+
+3. **Intelligent Scheduling system for streamlined appointment booking.** Pickup-time scheduler with real slot persistence (SQLite-backed). Defaults to the seller's home zip; offers Carvana hub dropoff as alternative. Calendar UI: in-house weekly grid (faster to ship than Cal.com self-host, full control over the UX, no third-party tenant config).
+
+4. **Emotional Support Content integration.** Pre-baked empathy interstitials at known anxiety moments: "what happens if my offer drops after inspection" (sell-side offer-drop anxiety), "what data do you keep / share / sell" (privacy explainer), "you have 7 days to walk away after pickup" (commitment-pressure reducer). Chatbot calls into the SupportContent module via tool-use when emotional signals are detected (user expresses uncertainty, hesitation, or asks "are you sure" questions).
+
+### v2 user stories (sell-side only; US5-US7 buy-side from v1 are DROPPED for v2)
+
+**US-V2-1 — Conversational plate entry.** As a seller, I want to enter my plate by typing into a chat (or speaking, or pasting) instead of filling a multi-field form, so that the entry feels low-effort.
+Given the seller opens the prototype. When they say or type their plate and state in natural language ("my plate is XRJ4041 in Texas" or "8E79985, California"). Then the chatbot extracts plate + state, calls `/api/lookup/plate`, and replies with the resolved vehicle within 3 seconds of message send.
+
+**US-V2-2 — Photo-capture VIN rescue.** As a seller whose plate cannot be found, I want to point my camera at the VIN sticker and have the VIN auto-extracted into the chat.
+Given the chatbot has told the seller the plate lookup missed. When the seller taps "scan VIN with camera" inside the chat. Then the browser requests camera permission, the seller captures a frame, Claude vision returns the VIN at 95%+ confidence, the chatbot confirms the extracted VIN with the seller, runs the lookup, and shows vehicle data.
+
+**US-V2-3 — Honest vendor-failure copy.** As a seller hit by a vendor or backend failure, I want the chatbot to acknowledge it's a system problem, preserve my input, and offer me a real alternative.
+Given the seller has provided plate or VIN. When the VendorCascade exhausts. Then the chatbot says (paraphrased) "our partner data doesn't have this one, and it's on us, not you; want to try a photo of your registration card?" The chat history is preserved; nothing is reset.
+
+**US-V2-4 — Conversational condition assessment.** As a seller, I want the chatbot to ask me about my car's condition one question at a time, skipping inapplicable branches, so I'm not staring down a 30-field form.
+Given vehicle data has resolved. When the chatbot continues. Then it asks 6-10 contextual condition questions (mileage, accident history, mechanical issues, exterior damage, interior wear, tire condition), branching based on prior answers, and produces a condition tier (Excellent / Good / Fair / Rough).
+
+**US-V2-5 — Pickup scheduling.** As a seller with an instant offer, I want to book a pickup time at my home (or dropoff at a hub) without leaving the chat.
+Given the offer has been delivered. When the seller asks to schedule pickup. Then the Scheduler component renders inline in the chat (or transitions to a calendar UI), shows the next 14 days with available slots, and confirms the booking on slot selection. The chat reflects the confirmed appointment time and location.
+
+**US-V2-6 — Emotional support at known anxiety moments.** As a seller worried about the offer dropping or the inspector finding hidden problems, I want the chatbot to address my concern with a clear, pre-vetted explanation instead of generic reassurance.
+Given the seller expresses uncertainty (e.g., "what if the inspection finds something I missed?"). When the chatbot detects the anxiety signal. Then it calls into SupportContent and renders the relevant pre-baked empathy widget (e.g., "Offer adjustment policy: in 2026, 73% of Carvana pickups paid the original offer; the median adjustment was $200 for undisclosed cosmetic issues; you can walk away at pickup if the adjusted offer doesn't work for you.").
+
+**US-V2-7 — 15-minute completion + NPS micro-survey.** As a motivated seller, I want to finish the entire flow (plate → condition → offer → pickup booked) in under 15 minutes and rate the experience at the end.
+Given the seller commits to the flow. When they reach the appointment-confirmed screen. Then the total elapsed time is recorded (Playwright stopwatches the happy path), and an NPS micro-survey ("How likely are you to recommend Carvana's onboarding to a friend, 0-10?") renders with a free-text follow-up.
+
+### v2 metrics acceptance criteria (how each PRD metric is honestly claimed in 2 days)
+
+| PRD metric | How it's verified | Where the evidence lives |
+|---|---|---|
+| Boost completion rate by 40% from current baseline | Stack of published industry-benchmark lifts that our specific features deliver (address autocomplete 12-30%, deferred account creation 20-35%, OCR doc capture 15-25%, chatbot vs form 18%). Side-by-side recorded video of Carvana baseline vs our flow with abandonment moments marked. We are designing for the threshold and citing the studies, not claiming a measured lift. | `docs/metrics-evidence.md`, `website/index.html` deck slide, recorded video |
+| Completed within 15 min for a motivated user | Playwright e2e scenario `tests/e2e/v2-happy-path.spec.ts` stopwatches plate-entry → offer → pickup-booked. Assertion: total wall-clock <15 min (realistic: 3-5 min). | `tests/e2e/v2-happy-path.spec.ts`, `docs/qa-reports/` |
+| NPS 70+ for the onboarding experience | Live NPS micro-survey widget collects ratings during the demo (the demo recording will show ≥3 real responses). For the pitch, cite comparable products' published NPS using this onboarding pattern. Acknowledge we are designing for the threshold, not measuring it at scale. | `src/components/NpsSurvey.tsx`, `server/routes/nps.ts`, `docs/metrics-evidence.md` |
+| <3 s response time under load | k6 load test against the deployed Render instance (`scripts/perf/load.k6.js`), p95 reported in `docs/perf-report.md`. Render service pinned to paid tier OR pre-warmed before the demo to dodge cold-start penalty. | `scripts/perf/load.k6.js`, `docs/perf-report.md` |
+
+### v2 demo script (60-second happy path, replaces v1 demo script)
+
+1. (0:00-0:08) "Here's Carvana today. I type my plate, it fails, app blames me." (Carvana baseline footage, plate lookup error.)
+2. (0:08-0:20) "Here's our chatbot. I just say my plate and state. Vehicle resolves." (Our chatbot, conversational plate entry, vehicle data appears.)
+3. (0:20-0:32) "Plate didn't work for me last time on Carvana. The chatbot just asked for a photo of the VIN sticker." (Camera capture, Claude vision extracts VIN, chatbot confirms.)
+4. (0:32-0:44) "Six condition questions, branching based on what I say. Offer comes in." (Conversational condition Q&A.)
+5. (0:44-0:55) "Pickup booking right inside the chat. Saturday 10 AM at home." (Calendar UI inline in chat.)
+6. (0:55-1:00) "Three minutes, no form anxiety, no blame-the-user, real pickup booked." (Closing card.)
+
+### v2 out of scope (this 2-day rebuild)
+
+- Buy-side prequalification (US5-7 from v1). Dropped for v2 because (a) 2 days does not give time for both sides + 4 new capabilities, and (b) scheduling has no natural primitive on the buy side.
+- Real soft-pull credit-bureau integration (would need 5+ days for Equifax/TransUnion vendor setup).
+- Hard credit pull (constitutional non-negotiable).
+- Sale completion / payment / title transfer (post-onboarding).
+- ConsentManager (was for buy-side TCPA SMS opt-in; sell-side has lower TCPA exposure since no marketing-form pattern).
+- PrequalEstimator (buy-side only).
+- Native iOS Vision OCR demo (replaced by Claude vision on web for v2; the on-device privacy slide is dropped from the v2 pitch).
+
+### v2 rubric-pillar mapping
+
+| Rubric pillar | v2 user stories it satisfies | Where the evidence lives |
+|---|---|---|
+| Architecture | US-V2-1, US-V2-3 (chatbot orchestrating tool-use over VendorCascade with degradation fallback) | `plan.md` v2 architecture, `src/chat/ChatbotShell.tsx`, `server/routes/chat.ts` |
+| Scalability | US-V2-5, metric "p95 <3 s under load" (Scheduler with atomic SQLite slot allocation; streamed chat responses) | `scripts/perf/load.k6.js`, `docs/perf-report.md`, `server/scheduler/atomicity.ts` |
+| Security | US-V2-2 (image stays in our stack, no third-party vision vendor); DPPA boundary unchanged from v1 | `constitution.md` v2 non-negotiables, `server/routes/ocr.ts` |
+| Testing | All US-V2 (Playwright per story + property tests on chatbot tool-use + load test) | `tests/`, `QA_ADVERSARY.md` v2 categories |
+
+---
+
+## v1 content (below this line — kept for git-history continuity, NOT authoritative for v2)
 
 ## Problem statement
 
