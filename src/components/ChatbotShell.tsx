@@ -38,7 +38,30 @@ import { HiddenOcrFileInput, useOcrCapture } from "./OcrCapture.tsx";
 import { useScheduler, type PickupAddress } from "./Scheduler.tsx";
 import { NpsSurvey } from "./NpsSurvey.tsx";
 import { MetricsOverlay } from "./MetricsOverlay.tsx";
-import { ProgressBar, type ProgressPhase } from "./ProgressBar.tsx";
+import {
+  useConditionIntake,
+  type ConditionExtractionResult,
+} from "./ConditionIntake.tsx";
+import { usePayoff } from "./PayoffForm.tsx";
+import {
+  usePaymentMethod,
+  type PaymentMethod as PaymentMethodChoice,
+} from "./PaymentMethod.tsx";
+import { useContractConsent } from "./ContractConsent.tsx";
+import { OfferCard, type OfferResult } from "./OfferCard.tsx";
+import {
+  SellWorkspace,
+  type SellWorkspaceState,
+} from "./SellWorkspace.tsx";
+// NOTE: We used to import ProgressBar / ProgressPhase here to render a
+// four-stage indicator (Reading → Lookup → Drafting → Finalizing) inside
+// the transcript while Sonnet 4.5 was the chat model and first-token
+// latency was 1.5-3s. With Haiku 4.5 the first token arrives in 300-600ms
+// and the indicator added visual noise without conveying useful info.
+// The empty assistant bubble's animated typing dots (TYPING_DOTS_STYLE
+// below) is the only "we're working on it" affordance we now need.
+// ProgressBar.tsx is still exported and used elsewhere (OCR pipeline);
+// don't delete it.
 
 type ChatRole = "user" | "assistant";
 type ChatMessageBlock =
@@ -93,14 +116,6 @@ interface ResolvedLookupView {
 const GREETING_TEXT =
   "Hi — I'm here to help you sell your car. What's your license plate, and what state is it from?";
 
-/** Phases for the chat SSE pipeline. */
-const CHAT_PHASES: readonly ProgressPhase[] = [
-  { id: "reading", label: "Reading your message" },
-  { id: "lookup", label: "Calling vehicle lookup" },
-  { id: "draft", label: "Drafting reply" },
-  { id: "final", label: "Finalizing" },
-];
-
 export function ChatbotShell(): JSX.Element {
   const [useForm, setUseForm] = useState<boolean>(false);
   const [turns, setTurns] = useState<UiTurn[]>([
@@ -114,7 +129,9 @@ export function ChatbotShell(): JSX.Element {
   const [draft, setDraft] = useState<string>("");
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [chatPhase, setChatPhase] = useState<ProgressPhase["id"]>("reading");
+  // chatPhase / CHAT_PHASES were removed when we swapped to Haiku 4.5.
+  // The bare typing dots inside the empty assistant bubble are the only
+  // affordance we need at sub-second TTFT.
 
   // Authoritative wire history. Built from `turns` on every send and
   // overwritten by `history_sync` SSE events so multi-turn conversation
@@ -155,6 +172,24 @@ export function ChatbotShell(): JSX.Element {
   const [latestVehicle, setLatestVehicle] = useState<ResolvedLookupView | null>(
     null,
   );
+
+  // Slice F: workspace aggregator. Built up as each stage of the
+  // expanded sell flow completes — vehicle (from lookup), condition
+  // (from ConditionIntake), payoff (from PayoffForm), offer (from
+  // generate_offer tool result), pickup (from Scheduler), payment
+  // (from PaymentMethod), contract (from ContractConsent). The
+  // SellWorkspace component renders the live aggregate state above
+  // the transcript so the seller always sees what they have and
+  // what's left.
+  const [workspaceState, setWorkspaceState] = useState<SellWorkspaceState>({
+    vehicle: null,
+    condition: null,
+    payoff: null,
+    offer: null,
+    pickup: null,
+    paymentMethod: null,
+    contract: null,
+  });
 
   // Auto-scroll the chat to the latest turn after each render.
   useEffect(() => {
@@ -200,14 +235,10 @@ export function ChatbotShell(): JSX.Element {
         { role: "user", content: trimmed },
       ];
 
-      setChatPhase("reading");
       setIsStreaming(true);
       try {
         await streamChatResponse({
           messages: historyRef.current,
-          onPhase: (phase) => {
-            setChatPhase(phase);
-          },
           onEvent: (event) => {
             if (event.type === "history_sync") {
               historyRef.current = event.messages;
@@ -220,6 +251,50 @@ export function ChatbotShell(): JSX.Element {
                 isResolvedLookup(event.result)
               ) {
                 setLatestVehicle(event.result);
+                const v = event.result.vehicle;
+                // exactOptionalPropertyTypes: omit trim entirely when
+                // the lookup didn't carry one (rather than setting it
+                // to undefined, which violates the optional contract).
+                setWorkspaceState((prev) => ({
+                  ...prev,
+                  vehicle: {
+                    year: v.year,
+                    make: v.make,
+                    model: v.model,
+                    ...(v.trim !== undefined ? { trim: v.trim } : {}),
+                  },
+                }));
+              }
+              // Slice F: react to user_action_required tool results.
+              // Each new sell-side stage opens its panel when the
+              // chatbot calls the corresponding tool. The panel
+              // posts back into the chat via sendMessage, which is
+              // how the chatbot picks the flow up again.
+              if (isUserActionRequired(event.result)) {
+                switch (event.result.action) {
+                  case "open_condition_intake":
+                    conditionRef.current?.open();
+                    break;
+                  case "open_payoff_form":
+                    payoffRef.current?.open();
+                    break;
+                  case "open_payment_method":
+                    paymentRef.current?.open();
+                    break;
+                  case "open_contract_consent":
+                    contractRef.current?.open();
+                    break;
+                  default:
+                    // Other user_action_required actions
+                    // (tap_camera_button, tap_scheduler_button)
+                    // are surfaced in the chatbot's reply text.
+                    break;
+                }
+              }
+              // Capture the full OfferResult into workspace state
+              // so SellWorkspace shows the headline number live.
+              if (event.name === "generate_offer" && isOfferResult(event.result)) {
+                setWorkspaceState((prev) => ({ ...prev, offer: event.result as OfferResult }));
               }
             }
             applySseEventToTurns(event, setTurns);
@@ -282,6 +357,10 @@ export function ChatbotShell(): JSX.Element {
       // into the chat history (PII-out-of-text rule from
       // constitution.md non-negotiable #9). The chat sees the
       // displayLabel and scope only.
+      setWorkspaceState((prev) => ({
+        ...prev,
+        pickup: { displayLabel: args.displayLabel, scope: args.scope },
+      }));
       void sendMessage(
         `Pickup booked: ${args.displayLabel} at ${args.scope}`,
       );
@@ -294,6 +373,77 @@ export function ChatbotShell(): JSX.Element {
     onPickupBooked,
     defaultAddress,
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Slice F: post-VIN flow hooks. Each opens its own inline panel below
+  // the chat composer. Refs are exposed so the SSE event handler (which
+  // sees the chatbot's user_action_required tool results) can call
+  // controls.open() without going through React state.
+  // ─────────────────────────────────────────────────────────────────────
+  const conditionRef = useRef<{ open: () => void } | null>(null);
+  const payoffRef = useRef<{ open: () => void } | null>(null);
+  const paymentRef = useRef<{ open: () => void } | null>(null);
+  const contractRef = useRef<{ open: () => void } | null>(null);
+
+  const onConditionExtracted = useCallback(
+    (result: ConditionExtractionResult): void => {
+      setWorkspaceState((prev) => ({ ...prev, condition: result }));
+      const mileageBit =
+        result.extractedMileage !== undefined
+          ? `extracted mileage ${result.extractedMileage.toLocaleString()}`
+          : "mileage not read";
+      const damageBit = `${String(result.visibleDamage.length)} damage finding${result.visibleDamage.length === 1 ? "" : "s"}`;
+      const tierBit = `suggested tier ${result.suggestedTier}`;
+      void sendMessage(
+        `Condition assessment: ${mileageBit}; ${damageBit}; ${tierBit}`,
+      );
+    },
+    [sendMessage],
+  );
+  const condition = useConditionIntake({ onConditionExtracted });
+  // Bind the imperative open() so the SSE handler can fire it.
+  conditionRef.current = { open: condition.controls.open };
+
+  const onPayoffRecorded = useCallback(
+    (payoff: { lender: string; payoffAmount: number }): void => {
+      setWorkspaceState((prev) => ({ ...prev, payoff }));
+      void sendMessage(
+        `Loan payoff recorded: $${payoff.payoffAmount.toLocaleString()} owed to ${payoff.lender}`,
+      );
+    },
+    [sendMessage],
+  );
+  const payoff = usePayoff({ onPayoffRecorded });
+  payoffRef.current = { open: payoff.controls.open };
+
+  const onPaymentMethodSelected = useCallback(
+    (method: PaymentMethodChoice): void => {
+      setWorkspaceState((prev) => ({ ...prev, paymentMethod: method }));
+      const human =
+        method === "ach"
+          ? "Direct deposit (ACH)"
+          : method === "check"
+            ? "Physical check at pickup"
+            : "Trade-in credit";
+      void sendMessage(`Payment method selected: ${human}`);
+    },
+    [sendMessage],
+  );
+  const payment = usePaymentMethod({ onPaymentMethodSelected });
+  paymentRef.current = { open: payment.controls.open };
+
+  const onContractAcknowledged = useCallback(
+    (ack: { acknowledgedAt: string }): void => {
+      setWorkspaceState((prev) => ({
+        ...prev,
+        contract: { acknowledgedAt: ack.acknowledgedAt },
+      }));
+      void sendMessage(`Contract acknowledged at ${ack.acknowledgedAt}`);
+    },
+    [sendMessage],
+  );
+  const contract = useContractConsent({ onContractAcknowledged });
+  contractRef.current = { open: contract.controls.open };
 
   // Drag-and-drop on the entire chat root. dragover MUST preventDefault
   // to keep the browser from navigating to the dropped image's URL.
@@ -387,6 +537,36 @@ export function ChatbotShell(): JSX.Element {
         @media (max-width: 480px) {
           .vouch-mobile-only { display: inline; }
         }
+        /*
+          Typing-dot indicator replaces the old four-phase ProgressBar.
+          Three 6x6 dots, opacity pulses 0.2 → 1 → 0.2 on a 1.2s loop,
+          staggered 0.2s. Inherits the bubble's text color so it works
+          in both light and dark themes.
+        */
+        .chatbot-typing-dots {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          height: 14px;
+        }
+        .chatbot-typing-dots > span {
+          display: inline-block;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          opacity: 0.25;
+          animation: chatbot-typing-pulse 1.2s ease-in-out infinite;
+        }
+        .chatbot-typing-dots > span:nth-child(2) { animation-delay: 0.2s; }
+        .chatbot-typing-dots > span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes chatbot-typing-pulse {
+          0%, 100% { opacity: 0.25; transform: translateY(0); }
+          40%      { opacity: 1;    transform: translateY(-2px); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .chatbot-typing-dots > span { animation: none; opacity: 0.55; }
+        }
       `}</style>
       <div
         className={dragActive ? "drop-overlay active" : "drop-overlay"}
@@ -431,15 +611,12 @@ export function ChatbotShell(): JSX.Element {
             }
           />
         ))}
-        {isStreaming ? (
-          <div style={progressInTranscriptStyle}>
-            <ProgressBar
-              phases={CHAT_PHASES}
-              activePhaseId={chatPhase}
-              ariaLabel="Chat progress"
-            />
-          </div>
-        ) : null}
+        {/*
+          The four-phase ProgressBar was removed when the chat model
+          dropped to Haiku 4.5. The animated typing dots inside the
+          empty assistant bubble (TurnView, see TYPING_DOTS keyframes
+          in <style> below) carry the same affordance with no chrome.
+        */}
         {chatError !== null ? (
           <div style={chatErrorStyle} role="alert">
             {chatError.startsWith("Type a message")
@@ -544,6 +721,26 @@ export function ChatbotShell(): JSX.Element {
       </div>
       {ocr.panel}
       {scheduler.panel}
+      {/*
+        Slice F panels. Each is opened imperatively from the SSE
+        tool_result handler when the chatbot calls the corresponding
+        tool (start_condition_intake / record_loan_status / etc.).
+        The panels post results back into the chat via the
+        onXxx callbacks set above.
+      */}
+      {condition.panel}
+      {payoff.panel}
+      {payment.panel}
+      {contract.panel}
+      {/*
+        Live workspace aggregator. Shows progress across all seven
+        stages (vehicle → condition → payoff → offer → pickup →
+        payment → contract). Hidden until at least one stage has
+        data so the empty chat still looks clean.
+      */}
+      {hasAnyWorkspaceData(workspaceState) ? (
+        <SellWorkspace state={workspaceState} />
+      ) : null}
 
       {npsPromptVisible ? (
         <NpsSurvey
@@ -581,7 +778,24 @@ function TurnView({
     <div style={assistantBubbleWrapStyle}>
       <div style={assistantBubbleStyle}>
         {turn.text === "" && !turn.complete ? (
-          <em>...</em>
+          /*
+            Typing-dot indicator. Three spans, each pulsing on a 1.2s
+            cycle with a 0.2s stagger. Keyframes are defined in the
+            <style> block at the root of ChatbotShell so they only
+            appear once in the DOM. Replaced the four-phase ProgressBar
+            when the chat model swapped to Haiku 4.5 (sub-second TTFT
+            doesn't need a multi-stage indicator).
+          */
+          <span
+            className="chatbot-typing-dots"
+            role="status"
+            aria-live="polite"
+            aria-label="Assistant is typing"
+          >
+            <span />
+            <span />
+            <span />
+          </span>
         ) : (
           <MarkdownView body={turn.text} />
         )}
@@ -681,6 +895,10 @@ function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
       </div>
     );
   }
+  // Slice F: render the OfferCard inline when generate_offer returns.
+  if (card.name === "generate_offer" && isOfferResult(result)) {
+    return <OfferCard result={result} />;
+  }
   return (
     <div style={genericToolCardStyle}>
       <strong style={{ fontSize: 13 }}>tool: {card.name}</strong>
@@ -701,6 +919,54 @@ function isSupportContent(
     obj.kind === "support_content" &&
     typeof obj.title === "string" &&
     typeof obj.body === "string"
+  );
+}
+
+/**
+ * Type guard for the user_action_required shape that drives the
+ * Slice F panel routing. Every Slice F tool returns this shape (or a
+ * format_error) so the chat shell can react without coupling to the
+ * server's tool-by-tool dispatch logic.
+ */
+function isUserActionRequired(
+  value: unknown,
+): value is { kind: "user_action_required"; action: string; note?: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.kind === "user_action_required" && typeof obj.action === "string"
+  );
+}
+
+/**
+ * Type guard for the OfferEngine result shape. Used by the SSE
+ * handler to capture the offer into workspace state and by the
+ * ToolResultCard renderer to pick the OfferCard branch.
+ */
+function isOfferResult(value: unknown): value is OfferResult {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.kind === "offer" &&
+    typeof obj.offerUsd === "number" &&
+    Array.isArray(obj.lines)
+  );
+}
+
+/**
+ * True if the workspace has data for ANY stage. Drives whether the
+ * SellWorkspace renders at all (we hide it on an empty chat so the
+ * landing screen isn't cluttered with seven "Not started" pills).
+ */
+function hasAnyWorkspaceData(state: SellWorkspaceState): boolean {
+  return (
+    state.vehicle !== null ||
+    state.condition !== null ||
+    state.payoff !== null ||
+    state.offer !== null ||
+    state.pickup !== null ||
+    state.paymentMethod !== null ||
+    state.contract !== null
   );
 }
 
@@ -726,11 +992,10 @@ function isResolvedLookup(value: unknown): value is ResolvedLookupView {
 
 /**
  * POST to /api/chat and parse the SSE stream. Calls `onEvent` for each
- * complete SSE record and `onPhase` at real waypoints in the lifecycle:
- *   - "reading"  → before fetch
- *   - "lookup"   → first tool_use_start
- *   - "draft"    → first text_delta
- *   - "final"    → done event
+ * complete SSE record. Phase callbacks were removed when we dropped the
+ * in-transcript ProgressBar — Haiku 4.5 TTFT is fast enough that the
+ * animated typing dots on the empty assistant bubble are sufficient.
+ *
  * Throws on non-2xx responses or malformed JSON in the stream. The
  * thrown Error.message carries the HTTP status / response text so
  * `errorToUserMessage` can surface it precisely.
@@ -738,7 +1003,6 @@ function isResolvedLookup(value: unknown): value is ResolvedLookupView {
 async function streamChatResponse(args: {
   messages: ChatMessage[];
   onEvent: (event: SseEvent) => void;
-  onPhase: (phase: ProgressPhase["id"]) => void;
 }): Promise<void> {
   // Render free-tier dyno sleeps after ~15 min idle. The first request
   // after sleep usually fails at the TCP / TLS layer because Cloudflare
@@ -773,7 +1037,9 @@ async function streamChatResponse(args: {
           `Network request to /api/chat failed (${msg}). The server may be cold-starting — wait 30 seconds and try again. If it keeps failing, check your connection.`,
         );
       }
-      args.onPhase("reading");
+      // Phase callback removed with the progress bar. Cold-start retry
+      // still happens silently; the typing dots stay visible because
+      // isStreaming is still true.
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -806,8 +1072,6 @@ async function streamChatResponse(args: {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let sawToolUse = false;
-  let sawDelta = false;
   for (;;) {
     let chunk: ReadableStreamReadResult<Uint8Array>;
     try {
@@ -836,15 +1100,10 @@ async function streamChatResponse(args: {
           `Malformed SSE event from /api/chat: ${json.slice(0, 120)}`,
         );
       }
-      if (parsed.type === "tool_use_start" && !sawToolUse) {
-        sawToolUse = true;
-        args.onPhase("lookup");
-      } else if (parsed.type === "text_delta" && !sawDelta) {
-        sawDelta = true;
-        args.onPhase("draft");
-      } else if (parsed.type === "done") {
-        args.onPhase("final");
-      }
+      // Phase callbacks were dropped with the in-transcript ProgressBar.
+      // The empty assistant bubble's typing dots cover the "still working"
+      // affordance, and once text_delta starts arriving the text itself
+      // is the affordance.
       args.onEvent(parsed);
     }
     if (done) {
@@ -1078,6 +1337,6 @@ const chatErrorStyle: React.CSSProperties = {
   marginTop: 8,
   fontSize: 13,
 };
-const progressInTranscriptStyle: React.CSSProperties = {
-  marginTop: 8,
-};
+// progressInTranscriptStyle removed with the in-transcript ProgressBar.
+// The typing-dot indicator lives inside the assistant bubble itself and
+// uses .chatbot-typing-dots CSS class (see <style> block in render).

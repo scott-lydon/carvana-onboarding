@@ -42,7 +42,28 @@ import { SYSTEM_PROMPT } from "../chat/system-prompt.js";
 import { TOOLS, dispatchTool } from "../chat/tools.js";
 import type { VendorCascade } from "../../src/lookup/VendorCascade.js";
 
-const ANTHROPIC_MODEL = "claude-sonnet-4-5";
+/**
+ * Default model is Haiku 4.5 — chosen so first-token latency under load is
+ * low enough that the chat does NOT need a multi-phase progress bar. Sonnet
+ * 4.5 was the previous default and routinely showed a 1.5-3s gap before the
+ * first token, which is why the UI had to fall back on a "Reading → Lookup
+ * → Drafting → Finalizing" phase indicator. With Haiku 4.5 the first token
+ * arrives fast enough that a simple typing indicator (or no indicator at
+ * all, just the cursor-style streaming text) is enough.
+ *
+ * If a future regression demands Sonnet for a specific deployment, set
+ * ANTHROPIC_MODEL in the environment. The env var is read at handler
+ * construction time, so changing it requires a server restart — that's
+ * deliberate so we never silently swap models mid-request.
+ *
+ * Why we don't use the dated alias ("claude-haiku-4-5-20251001"): the
+ * unversioned id auto-tracks the latest Haiku 4.5 point release. If a
+ * particular evaluation requires reproducibility, pin via env.
+ */
+const ANTHROPIC_MODEL: string = ((): string => {
+  const fromEnv = process.env.ANTHROPIC_MODEL?.trim() ?? "";
+  return fromEnv !== "" ? fromEnv : "claude-haiku-4-5";
+})();
 const MAX_TOKENS = 2048;
 // Bound the tool-dispatch loop so a runaway model can't burn unlimited
 // turns. Realistic happy path is 1-2 turns (initial → tool_use → final).
