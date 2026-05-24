@@ -99,10 +99,25 @@ export class Plate {
  * If the user input contains I, O, or Q, the error suggests substitution
  * (constitution non-negotiable: never blame the user when we know the
  * recovery path).
+ *
+ * Prefix labels: real-world OCR (VIN sticker, registration card, even
+ * voice-to-text) frequently bleeds the literal label "VIN", "VIN:",
+ * "VIN -", "V.I.N.", "Vehicle Identification Number" through alongside
+ * the 17 characters. Without label-stripping, the normalizer would
+ * concatenate "VIN" + the actual characters and reject the result as
+ * length-mismatch. We strip a short list of well-known label words
+ * BEFORE the alphanumeric pass so the user never sees a length error
+ * caused by a label they did not type.
  */
 export class Vin {
   public readonly raw: string;
   public readonly normalized: string;
+  /**
+   * Whether the constructor stripped a label like "VIN:" before
+   * normalization. Surfaced so callers can show a calm "we stripped the
+   * label" affordance instead of silently mutating user input.
+   */
+  public readonly strippedLabels: readonly string[];
 
   public constructor(rawInput: string) {
     if (typeof rawInput !== "string") {
@@ -111,17 +126,23 @@ export class Vin {
       );
     }
     this.raw = rawInput;
-    const upper = rawInput
+    const { withoutLabels, stripped } = stripVinLabels(rawInput);
+    this.strippedLabels = stripped;
+    const upper = withoutLabels
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, ""); // strip whitespace, dashes, dots (EC4).
     this.normalized = upper;
 
     if (this.normalized.length !== 17) {
+      const labelHint =
+        stripped.length > 0
+          ? ` (stripped label prefixes: ${stripped.join(", ")})`
+          : "";
       throw new Error(
         `VIN must be exactly 17 characters after normalization; ` +
           `got ${JSON.stringify(rawInput)} -> ${this.normalized} ` +
-          `(length ${String(this.normalized.length)}). Modern VINs ` +
-          `(post-1980) are always 17 characters per ISO 3779.`,
+          `(length ${String(this.normalized.length)})${labelHint}. ` +
+          `Modern VINs (post-1980) are always 17 characters per ISO 3779.`,
       );
     }
     const forbidden = /[IOQ]/;
@@ -141,6 +162,121 @@ export class Vin {
       );
     }
   }
+
+  /**
+   * ISO 3779 / FMVSS 115 check-digit validation. Position 9 is a single
+   * character (0-9 or X meaning 10) computed from a transliteration table
+   * applied to the other 16 characters and a fixed weight vector.
+   *
+   * Returns { ok: true } when the check digit matches the computed digit.
+   * Returns { ok: false, expected, actual, reason } when it does not.
+   *
+   * **Warn, don't block.** Per the project's "warn-don't-block" rule, a
+   * check-digit mismatch is surfaced as a warning next to the lookup, not
+   * an error that blocks the lookup. Many region-specific VINs and some
+   * pre-2010 imports do not strictly follow the check digit rule; we
+   * never want to refuse a real vehicle because of a numerical quirk.
+   */
+  public validateCheckDigit(): VinChecksumResult {
+    // VIN_TRANSLITERATION + VIN_WEIGHTS are the ISO 3779 published tables.
+    // Documented inline so a future reader does not have to chase a spec.
+    const transliteration: Record<string, number> = {
+      "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7,
+      "8": 8, "9": 9,
+      A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8,
+      J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9,
+      S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9,
+    };
+    const weights: readonly number[] = [
+      8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2,
+    ];
+    let sum = 0;
+    for (let i = 0; i < 17; i += 1) {
+      const ch = this.normalized.charAt(i);
+      const value = transliteration[ch];
+      if (value === undefined) {
+        return {
+          ok: false,
+          expected: "?",
+          actual: this.normalized.charAt(8),
+          reason:
+            `Position ${String(i + 1)} character "${ch}" is not in the ISO 3779 ` +
+            `transliteration table. Cannot compute check digit.`,
+        };
+      }
+      sum += value * (weights[i] ?? 0);
+    }
+    const remainder = sum % 11;
+    const expected = remainder === 10 ? "X" : String(remainder);
+    const actual = this.normalized.charAt(8);
+    if (expected === actual) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      expected,
+      actual,
+      reason:
+        `Position 9 check digit is "${actual}" but ISO 3779 expects ` +
+        `"${expected}" for this VIN. The lookup will still proceed; this ` +
+        `is a calm warning, not a block. Common causes: an OCR misread on ` +
+        `another character (the check digit only fails when SOMETHING ` +
+        `upstream is off), a non-North-American import that does not use ` +
+        `the check digit rule, or a transcription error.`,
+    };
+  }
+}
+
+/**
+ * Result of {@link Vin.validateCheckDigit}. Discriminated union so callers
+ * pattern-match on `ok` rather than dereferencing optional fields.
+ */
+export type VinChecksumResult =
+  | { ok: true }
+  | { ok: false; expected: string; actual: string; reason: string };
+
+/**
+ * Known VIN label prefixes the OCR + voice paths bleed through. Anchored
+ * at the start of the string only; we never strip an embedded "VIN" that
+ * happens to land inside the actual characters (e.g. a Subaru VIN with
+ * adjacent V/I/N is impossible since I is forbidden, but we anchor anyway
+ * out of caution).
+ *
+ * Order matters: longer phrases first so "Vehicle Identification Number"
+ * is removed before its substrings.
+ */
+const VIN_LABEL_PATTERNS: readonly RegExp[] = [
+  /^\s*vehicle\s*identification\s*number\s*[:.\-#]?\s*/i,
+  /^\s*v\.?\s*i\.?\s*n\.?\s*[:.\-#]?\s*/i,
+];
+
+interface StrippedLabelResult {
+  readonly withoutLabels: string;
+  readonly stripped: readonly string[];
+}
+
+/**
+ * Strip any of the known VIN label patterns from the front of `raw`.
+ * Returns the cleaned string AND the literal text we removed (for
+ * surfacing as a warning so the user sees we did this transparently).
+ *
+ * Idempotent: a string with no recognized label passes through unchanged.
+ */
+function stripVinLabels(raw: string): StrippedLabelResult {
+  const stripped: string[] = [];
+  let working = raw;
+  // Apply each pattern up to once per call. We do NOT loop because a label
+  // appearing multiple times at the front would almost certainly be a sign
+  // of corrupt input we want to error on, not silently eat.
+  for (const pattern of VIN_LABEL_PATTERNS) {
+    const match = pattern.exec(working);
+    if (match !== null && match.index === 0) {
+      stripped.push(match[0].trim());
+      working = working.slice(match[0].length);
+      break; // one label prefix max; second label would be suspicious
+    }
+  }
+  return { withoutLabels: working, stripped };
 }
 
 /**

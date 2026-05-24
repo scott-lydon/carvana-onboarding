@@ -703,20 +703,44 @@ async function runLookupVin(
     };
   }
   const { vin, corrected } = parsed;
+
+  // Local VIN check-digit validation. Warn-don't-block per the project
+  // rule: a failing checksum is surfaced as an advisory next to the
+  // lookup result, NEVER as an error that prevents the lookup. Common
+  // causes: OCR misread on a non-check-digit character, a non-North-
+  // American import that doesn't use the rule, a transcription typo.
+  const checksum = vin.validateCheckDigit();
+  const advisory =
+    checksum.ok
+      ? undefined
+      : {
+          kind: "vin_checksum_warning" as const,
+          expected: checksum.expected,
+          actual: checksum.actual,
+          message:
+            `Heads up: this VIN's check digit looks off (position 9 is "${checksum.actual}" but the ISO 3779 formula computes "${checksum.expected}"). ` +
+            `We're still looking it up — the rule isn't 100% universal — but if the partner doesn't recognize this VIN, the most likely cause is one of the other 16 characters being slightly off. ` +
+            `Double-check the VIN against the driver's-side door jamb sticker.`,
+        };
+
   try {
     const result = await cascade.lookupByVin(vin);
+    // Attach correction (I/O/Q permutation) AND advisory (checksum
+    // warning) whenever they apply. Both fields are optional in the
+    // response shape so older clients ignore what they don't recognize.
+    const base = { ...result } as Record<string, unknown>;
     if (result.kind === "resolved" && corrected !== undefined) {
-      return {
-        ...result,
-        correction: {
-          original: corrected.original,
-          normalized: corrected.normalized,
-          reason:
-            "Swapped the letters I, O, and Q to 1 and 0 since real VINs never use those letters.",
-        },
+      base.correction = {
+        original: corrected.original,
+        normalized: corrected.normalized,
+        reason:
+          "Swapped the letters I, O, and Q to 1 and 0 since real VINs never use those letters.",
       };
     }
-    return result;
+    if (advisory !== undefined) {
+      base.advisory = advisory;
+    }
+    return base;
   } catch (err) {
     console.error(
       "[chat/tools] lookup_vin cascade threw — investigate immediately:",
@@ -727,6 +751,7 @@ async function runLookupVin(
       retryable: true,
       cause: "unexpected_cascade_throw",
       detail: "An unexpected internal error occurred. Please retry shortly.",
+      ...(advisory !== undefined ? { advisory } : {}),
     };
   }
 }
