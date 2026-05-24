@@ -44,3 +44,4 @@ perf-summary.json
 
 # v2 slice C: SQLite scheduler DB (ephemeral; recreated on boot)
 data/
+vite.config.ts.timestamp-*.mjs
