@@ -40,7 +40,34 @@ import { ProgressBar, type ProgressPhase } from "./ProgressBar.tsx";
 export interface OcrCaptureProps {
   /** Called with the recognized 17-char VIN when extraction succeeds. */
   onVinScanned: (vin: string) => void;
+  /**
+   * Called when the vision model detected a license plate instead of (or
+   * in addition to) a VIN. The state is forwarded when the model could
+   * read it from the photo (e.g. "TEXAS" above the plate); when not, the
+   * caller is expected to ask the user for the state to complete the
+   * plate lookup. Optional so existing callers that only consume VINs
+   * keep compiling.
+   */
+  onPlateScanned?: (args: { plate: string; state?: string }) => void;
 }
+
+/**
+ * Backend response shape from /api/ocr/recognize. The legacy `vin_sticker`
+ * target returns kind=resolved / not_found / low_confidence with `vin?`.
+ * The newer `vin_or_plate` target returns kind=resolved_vin / resolved_plate
+ * / not_found / low_confidence with `vin?` or `plate?`+`state?`.
+ *
+ * Both shapes share a common error / not_found envelope (`reason` string),
+ * so the discriminator does the routing and the rest of the field set is
+ * just optional.
+ */
+type OcrResponseBody =
+  | { kind: "resolved"; vin: string; confidence?: number }
+  | { kind: "resolved_vin"; vin: string; confidence?: number; alsoSawPlate?: string; alsoSawState?: string }
+  | { kind: "resolved_plate"; plate: string; state?: string; confidence?: number }
+  | { kind: "not_found"; reason?: string; rawPrefix?: string }
+  | { kind: "low_confidence"; reason?: string; confidence?: number }
+  | { kind: "transient_error" | "format_error"; reason?: string; detail?: string; cause?: string };
 
 /** Phases the OCR pipeline can be in. Drives the progress bar. */
 const OCR_PHASES: readonly ProgressPhase[] = [
@@ -98,9 +125,16 @@ export interface OcrCaptureBundle {
  * Hook-shaped OCR capture. The parent renders `controls.*` wherever it
  * wants the CTA buttons, mounts `<HiddenFileInput inputRef={fileInputRef}/>`
  * somewhere in the tree, and renders `panel` for camera/progress/error.
+ *
+ * Both VIN and license plate recognition flow through the same backend
+ * call (target=vin_or_plate). The hook routes the response to either
+ * `onVinScanned` or `onPlateScanned` based on the discriminator. If the
+ * caller has not provided `onPlateScanned`, a detected plate surfaces as
+ * an inline error rather than being silently dropped.
  */
 export function useOcrCapture(
   onVinScanned: (vin: string) => void,
+  onPlateScanned?: (args: { plate: string; state?: string }) => void,
 ): OcrCaptureBundle {
   const [status, setStatus] = useState<CaptureStatus>({ kind: "idle" });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -131,16 +165,17 @@ export function useOcrCapture(
           );
         }
         setStatus({ kind: "uploading", phase: "upload" });
-        const vin = await postOcrRequest({
+        const result = await postOcrRequest({
           base64,
           mediaType: file.type || "image/jpeg",
+          target: "vin_or_plate",
           onPhase: (phase) => {
             setStatus((prev) =>
               prev.kind === "uploading" ? { ...prev, phase } : prev,
             );
           },
         });
-        onVinScanned(vin);
+        routeOcrResult(result, onVinScanned, onPlateScanned);
         setStatus({ kind: "idle" });
       } catch (err) {
         setStatus({
@@ -154,7 +189,7 @@ export function useOcrCapture(
         if (fileInputRef.current !== null) fileInputRef.current.value = "";
       }
     },
-    [onVinScanned],
+    [onVinScanned, onPlateScanned],
   );
 
   const handleFileChange = useCallback(
@@ -341,16 +376,17 @@ export function useOcrCapture(
     }
     setStatus({ kind: "uploading", phase: "upload" });
     try {
-      const vin = await postOcrRequest({
+      const result = await postOcrRequest({
         base64,
         mediaType: "image/jpeg",
+        target: "vin_or_plate",
         onPhase: (phase) => {
           setStatus((prev) =>
             prev.kind === "uploading" ? { ...prev, phase } : prev,
           );
         },
       });
-      onVinScanned(vin);
+      routeOcrResult(result, onVinScanned, onPlateScanned);
       setStatus({ kind: "idle" });
     } catch (err) {
       setStatus({
@@ -361,7 +397,7 @@ export function useOcrCapture(
             : "OCR failed reading the captured frame.",
       });
     }
-  }, [onVinScanned, status]);
+  }, [onVinScanned, onPlateScanned, status]);
 
   const handleCancelCamera = useCallback(() => {
     if (status.kind === "camera_open") {
@@ -591,64 +627,165 @@ function stripDataUrlPrefix(input: string): string {
 }
 
 /**
- * POST the base64 image to /api/ocr/recognize and return the extracted
- * VIN on a kind="resolved" response. Phases reported via onPhase as
- * real milestones in the request lifecycle.
+ * POST the base64 image to /api/ocr/recognize and return the parsed
+ * response. Phases reported via onPhase as real milestones in the
+ * request lifecycle.
+ *
+ * **Cold-start retry.** Render's free tier sleeps after ~15 min idle.
+ * The first request after wake usually fails at the TCP / TLS layer
+ * (Safari surfaces this as `TypeError: Load failed`, Chrome / Firefox
+ * as `TypeError: Failed to fetch`). Without retry the user sees a
+ * useless "Load failed" panel and has to manually retry. We retry the
+ * initial fetch on TypeError only — once we have ANY HTTP response,
+ * we surface the body verbatim, because retrying 4xx/5xx would mask
+ * real backend errors.
+ *
+ * **Specific error mapping.** The thrown Error always names the failure
+ * category: configuration_missing, validation, vision_auth_error,
+ * vision_rate_limited, vision_rejected_image, not_found, low_confidence,
+ * unexpected_shape, network_after_retries. Every category carries a
+ * one-sentence recovery instruction so the user knows what to do.
  */
 async function postOcrRequest(args: {
   base64: string;
   mediaType: string;
+  target: "vin_sticker" | "vin_or_plate" | "registration_card" | "insurance_card" | "driver_license";
   onPhase?: (phase: ProgressPhase["id"]) => void;
-}): Promise<string> {
-  const { base64, mediaType, onPhase } = args;
+}): Promise<OcrResponseBody> {
+  const { base64, mediaType, target, onPhase } = args;
   onPhase?.("upload");
-  const response = await fetch("/api/ocr/recognize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      image: base64,
-      mediaType,
-      target: "vin_sticker",
-    }),
-  });
+
+  // Cold-start retry. Mirror the pattern in ChatbotShell.streamChatResponse
+  // so /api/ocr/recognize gets the same forgiveness as /api/chat on a
+  // post-sleep wake. Total extra wait: ≤11s before giving up.
+  const RETRY_DELAYS_MS = [1000, 3000, 7000];
+  let response: Response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch("/api/ocr/recognize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: base64, mediaType, target }),
+      });
+      break;
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError;
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (!isNetworkError || delay === undefined) {
+        const baseMessage = err instanceof Error ? err.message : String(err);
+        // Safari raises "Load failed" verbatim; rewrite into a user-
+        // actionable message that names the cold-start hypothesis and
+        // the only thing the user can do (wait, then try again).
+        const friendly =
+          baseMessage === "Load failed" || baseMessage === "Failed to fetch"
+            ? `Could not reach the recognition service (${baseMessage}). The server may be cold-starting — wait 30 seconds and tap the upload button again. If it keeps failing, check your internet connection.`
+            : `Network request to the recognition service failed (${baseMessage}). The server may be cold-starting — wait 30 seconds and tap the upload button again.`;
+        throw new Error(friendly);
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
   onPhase?.("extract");
-  const body = (await response.json()) as Record<string, unknown>;
-  onPhase?.("validate");
-  if (response.status === 503) {
+  // The vision call dominates wall-clock time; the JSON parse below is
+  // effectively instant. We surface "validate" right before it to keep
+  // the progress bar honest.
+  let body: Record<string, unknown>;
+  try {
+    body = (await response.json()) as Record<string, unknown>;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     throw new Error(
+      `Recognition service returned a response that wasn't valid JSON (${detail}). This is usually transient — try again.`,
+    );
+  }
+  onPhase?.("validate");
+
+  if (response.status === 503) {
+    // Either configuration_missing (no API key) or transient_error
+    // (auth / rate-limit / generic vision error). Either way the body
+    // carries the user-facing message; surface it verbatim.
+    const message =
       typeof body.message === "string"
         ? body.message
-        : "OCR service isn't configured. Ask the operator to set ANTHROPIC_API_KEY.",
-    );
+        : typeof body.detail === "string"
+          ? body.detail
+          : typeof body.reason === "string"
+            ? body.reason
+            : "OCR service is temporarily unavailable. Try again in a minute, or type the VIN or plate manually.";
+    throw new Error(message);
   }
   if (response.status === 400) {
     const reason =
       typeof body.reason === "string"
         ? body.reason
-        : "Server rejected the upload (400). Try a different photo.";
+        : typeof body.detail === "string"
+          ? body.detail
+          : "Server rejected the upload (HTTP 400). Try a different photo.";
     throw new Error(`Server validation failed: ${reason}`);
   }
   if (response.status !== 200) {
     throw new Error(
       typeof body.reason === "string"
         ? body.reason
-        : `OCR failed (HTTP ${String(response.status)}). Try again or use a different photo.`,
+        : `OCR failed (HTTP ${String(response.status)}). Try again, or type the VIN or plate manually.`,
     );
   }
+
+  // 200 OK — return the parsed body to the caller, which routes by kind.
   const kind = body.kind;
-  if (kind === "resolved" && typeof body.vin === "string") {
-    return body.vin;
-  }
-  if (kind === "not_found" || kind === "low_confidence") {
-    throw new Error(
-      typeof body.reason === "string"
-        ? body.reason
-        : "Vision model could not read a VIN from this image — re-take in better lighting.",
-    );
+  if (
+    kind === "resolved" ||
+    kind === "resolved_vin" ||
+    kind === "resolved_plate" ||
+    kind === "not_found" ||
+    kind === "low_confidence"
+  ) {
+    return body as unknown as OcrResponseBody;
   }
   throw new Error(
-    `Unexpected OCR response shape (kind=${String(kind)}). Try again or use a different photo.`,
+    `Unexpected OCR response shape (kind=${String(kind)}). Try again, or type the VIN or plate manually.`,
   );
+}
+
+/**
+ * Route a successful OCR response to the right callback. Throws when the
+ * response is a soft failure (not_found, low_confidence) — the caller
+ * catches and renders the message in the inline error panel.
+ *
+ * Plate detected but no `onPlateScanned` callback wired: throws a clear
+ * developer-facing error rather than silently dropping the plate so the
+ * bug surfaces immediately during integration rather than as a missing-
+ * feature complaint from a user.
+ */
+function routeOcrResult(
+  result: OcrResponseBody,
+  onVinScanned: (vin: string) => void,
+  onPlateScanned?: (args: { plate: string; state?: string }) => void,
+): void {
+  if (result.kind === "resolved" || result.kind === "resolved_vin") {
+    onVinScanned(result.vin);
+    return;
+  }
+  if (result.kind === "resolved_plate") {
+    if (onPlateScanned === undefined) {
+      throw new Error(
+        "Vision detected a license plate but no plate handler is wired. This is a wiring bug — the parent component should pass onPlateScanned to useOcrCapture.",
+      );
+    }
+    const args: { plate: string; state?: string } =
+      result.state !== undefined
+        ? { plate: result.plate, state: result.state }
+        : { plate: result.plate };
+    onPlateScanned(args);
+    return;
+  }
+  if (result.kind === "not_found" || result.kind === "low_confidence") {
+    throw new Error(
+      result.reason ??
+        "Vision model could not read a VIN or plate from this image. Try again with better lighting, or type the VIN or plate manually.",
+    );
+  }
 }
 
 const panelWrapStyle: React.CSSProperties = {

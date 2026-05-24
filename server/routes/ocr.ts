@@ -40,7 +40,8 @@ type OcrTarget =
   | "vin_sticker"
   | "registration_card"
   | "insurance_card"
-  | "driver_license";
+  | "driver_license"
+  | "vin_or_plate";
 
 const TARGET_PROMPTS: Record<OcrTarget, string> = {
   vin_sticker:
@@ -56,6 +57,30 @@ const TARGET_PROMPTS: Record<OcrTarget, string> = {
     "Reply with the 17 characters and nothing else. If not found, reply NOT_FOUND.",
   driver_license:
     "This image is a US driver license. VIN is not on a driver license. Reply NOT_FOUND.",
+  // The "upload a photo" / "scan with camera" CTA does NOT know in advance
+  // whether the user is showing a VIN sticker or a license plate. The
+  // model sees the image and picks. The response shape MUST be machine-
+  // parseable so the client can route VIN → lookup_vin and plate → ask
+  // the user for the state, then lookup_plate.
+  vin_or_plate:
+    "This image was uploaded by a US seller of a used car who wants help " +
+    "identifying their vehicle. It could be ANY of:\n" +
+    "  - a 17-character VIN sticker (door jamb, dash near the windshield, registration card)\n" +
+    "  - a US license plate (front or rear of the vehicle)\n" +
+    "  - both (a photo that happens to include both)\n" +
+    "  - neither\n\n" +
+    "Reply with ONE LINE of JSON (no markdown fence, no surrounding prose). " +
+    "Use exactly one of these shapes:\n\n" +
+    `  {"kind":"vin","vin":"<17 characters, uppercase, no I/O/Q>"}\n` +
+    `  {"kind":"plate","plate":"<characters as printed>","state":"<two-letter US state code if visible, else null>"}\n` +
+    `  {"kind":"both","vin":"<17 chars>","plate":"<plate chars>","state":"<state or null>"}\n` +
+    `  {"kind":"not_found","reason":"<one short sentence of what you DID see, in plain English>"}\n\n` +
+    "Rules:\n" +
+    "- If a VIN is present and you can read 17 characters, prefer kind=vin (or both).\n" +
+    "- A license plate is 5-8 alphanumeric characters, usually inside a rectangular frame, often with the issuing state name above or below.\n" +
+    "- For state, return the two-letter postal abbreviation (CA, TX, NY, ...) if you can read it; null if you cannot.\n" +
+    "- Do NOT include the word VIN or PLATE inside the value — strip any labels.\n" +
+    "- If you can see neither a VIN nor a plate, return kind=not_found with one short sentence describing the actual subject of the photo (e.g. \"a dashboard with a steering wheel, no VIN sticker visible\").",
 };
 
 /**
@@ -135,7 +160,7 @@ export function makeOcrHandler(
         kind: "format_error",
         field: "target",
         reason:
-          "target must be one of: vin_sticker, registration_card, insurance_card, driver_license",
+          "target must be one of: vin_sticker, registration_card, insurance_card, driver_license, vin_or_plate",
       });
       return;
     }
@@ -265,41 +290,233 @@ export function makeOcrHandler(
         ],
       });
       const text = extractTextContent(response.content);
-      const trimmed = text.trim().toUpperCase();
-      if (trimmed === "NOT_FOUND" || trimmed === "") {
-        res.status(200).json({
-          kind: "not_found",
-          reason:
-            "Vision model did not see a readable VIN in the image. Re-take the photo with better lighting, hold the camera closer, and make sure all 17 characters are in frame.",
-        });
+      // The vin_or_plate target uses a JSON wire shape so the client can
+      // route VIN-or-plate without a second parse. All other targets use
+      // the legacy bare-VIN response so existing callers keep working.
+      if (targetInput === "vin_or_plate") {
+        respondVinOrPlate(res, text);
         return;
       }
-      const match = /[A-HJ-NPR-Z0-9]{17}/.exec(trimmed);
-      if (match === null || !VIN_PATTERN.test(match[0])) {
-        res.status(200).json({
-          kind: "low_confidence",
-          reason:
-            `Vision model returned text that does not look like a valid 17-character VIN. Try a clearer photo.`,
-          confidence: 0.4,
-        });
-        return;
-      }
-      res.status(200).json({
-        kind: "resolved",
-        vin: match[0],
-        confidence: 0.95,
-      });
+      respondVinOnly(res, text);
     } catch (err) {
-      console.error("[ocr] vision call failed — investigate immediately:", err);
-      res.status(503).json({
-        kind: "transient_error",
-        retryable: true,
-        cause: "vision_model_error",
-        detail:
-          "The vision service had trouble reading your image. Try again, or type the VIN manually.",
+      const detail = err instanceof Error ? `${err.name}: ${err.message}` : "unknown";
+      console.error(
+        `[ocr] vision call failed (target=${targetInput}, model=${VISION_MODEL}) — investigate immediately:`,
+        err,
+      );
+      // Map common Anthropic SDK error classes to specific user-facing
+      // reasons so the user does not see a generic "vision service had
+      // trouble" panel. The first matching condition wins. Anything
+      // unknown falls through to a generic 503 transient_error.
+      const status =
+        err instanceof Anthropic.AuthenticationError ? 503
+        : err instanceof Anthropic.RateLimitError ? 503
+        : err instanceof Anthropic.BadRequestError ? 400
+        : 503;
+      const cause =
+        err instanceof Anthropic.AuthenticationError ? "vision_auth_error"
+        : err instanceof Anthropic.RateLimitError ? "vision_rate_limited"
+        : err instanceof Anthropic.BadRequestError ? "vision_rejected_image"
+        : "vision_model_error";
+      const userMessage =
+        err instanceof Anthropic.AuthenticationError
+          ? "Image recognition is misconfigured on the server. The ANTHROPIC_API_KEY is invalid or expired. Tell the operator — typing the VIN or plate manually still works."
+          : err instanceof Anthropic.RateLimitError
+            ? "Image recognition is temporarily rate-limited. Wait 60 seconds and try again, or type the VIN or plate manually."
+            : err instanceof Anthropic.BadRequestError
+              ? `The vision model rejected this image (${detail}). It may be too large, too small, or in a format the model cannot read. Try a different photo, or type the VIN or plate manually.`
+              : `The vision service had trouble reading your image (${detail}). Try again, or type the VIN or plate manually.`;
+      res.status(status).json({
+        kind: status === 400 ? "format_error" : "transient_error",
+        retryable: status !== 400,
+        cause,
+        reason: userMessage,
+        detail: userMessage,
       });
     }
   };
+}
+
+/**
+ * Parse the JSON-shape response for the vin_or_plate target. The model is
+ * instructed to return ONE LINE of JSON; we defensively strip a markdown
+ * fence in case it adds one anyway, then route by `kind`.
+ *
+ * Failure modes (each surfaces as a structured response, never a crash):
+ *   - empty text                      → not_found
+ *   - non-JSON text                   → not_found with rawPrefix for debugging
+ *   - JSON without `kind`             → not_found
+ *   - VIN-shaped value fails pattern  → low_confidence
+ */
+function respondVinOrPlate(res: Response, rawText: string): void {
+  const stripped = rawText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+  if (stripped === "") {
+    res.status(200).json({
+      kind: "not_found",
+      reason:
+        "Vision model returned no text. The image may be too dark or out of focus — try again with more light.",
+    });
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    res.status(200).json({
+      kind: "not_found",
+      reason:
+        "Vision model did not return JSON. Try a clearer photo, or type the VIN or plate manually.",
+      rawPrefix: stripped.slice(0, 240),
+    });
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    res.status(200).json({
+      kind: "not_found",
+      reason:
+        "Vision model returned non-object JSON. Try a clearer photo, or type the VIN or plate manually.",
+    });
+    return;
+  }
+  const obj = parsed as Record<string, unknown>;
+  const kind = obj.kind;
+  if (kind === "not_found") {
+    const reason =
+      typeof obj.reason === "string" && obj.reason.trim() !== ""
+        ? `${obj.reason.trim()} Try again with better lighting, hold the camera closer, and make sure the VIN sticker or license plate is fully in frame. You can also type the VIN or plate manually.`
+        : "Vision model could not see a VIN or license plate in this image. Try again with better lighting and frame the VIN sticker or license plate clearly.";
+    res.status(200).json({ kind: "not_found", reason });
+    return;
+  }
+  const vinValue = readVinFrom(obj);
+  const plateValue = readPlateFrom(obj);
+  const stateValue = readStateFrom(obj);
+  if (kind === "vin" || kind === "both") {
+    if (vinValue !== undefined) {
+      const resolved: Record<string, unknown> = {
+        kind: "resolved_vin",
+        vin: vinValue,
+        confidence: 0.95,
+      };
+      if (kind === "both" && plateValue !== undefined) {
+        resolved.alsoSawPlate = plateValue;
+        if (stateValue !== undefined) resolved.alsoSawState = stateValue;
+      }
+      res.status(200).json(resolved);
+      return;
+    }
+    // Said "vin" but the value didn't pass the 17-char ISO 3779 pattern.
+    res.status(200).json({
+      kind: "low_confidence",
+      reason:
+        "Vision model said it saw a VIN but the characters do not look like a valid 17-character VIN. Try a clearer photo, or type the VIN manually.",
+      confidence: 0.4,
+    });
+    return;
+  }
+  if (kind === "plate") {
+    if (plateValue !== undefined) {
+      const resolved: Record<string, unknown> = {
+        kind: "resolved_plate",
+        plate: plateValue,
+        confidence: 0.9,
+      };
+      if (stateValue !== undefined) resolved.state = stateValue;
+      res.status(200).json(resolved);
+      return;
+    }
+    res.status(200).json({
+      kind: "low_confidence",
+      reason:
+        "Vision model said it saw a plate but the characters were unreadable. Try a clearer photo, or type the plate manually.",
+      confidence: 0.4,
+    });
+    return;
+  }
+  // Unknown kind — treat as not_found with the raw payload preserved so
+  // operators can debug from server logs without re-running the call.
+  res.status(200).json({
+    kind: "not_found",
+    reason:
+      "Vision model returned an unexpected response shape. Try again, or type the VIN or plate manually.",
+    rawPrefix: stripped.slice(0, 240),
+  });
+}
+
+/**
+ * Legacy VIN-only response path used by the vin_sticker / registration_card /
+ * insurance_card / driver_license targets. Unchanged behavior — kept here so
+ * the existing OcrCapture component and its callers still work without
+ * having to migrate to the JSON shape.
+ */
+function respondVinOnly(res: Response, rawText: string): void {
+  const trimmed = rawText.trim().toUpperCase();
+  if (trimmed === "NOT_FOUND" || trimmed === "") {
+    res.status(200).json({
+      kind: "not_found",
+      reason:
+        "Vision model did not see a readable VIN in the image. Re-take the photo with better lighting, hold the camera closer, and make sure all 17 characters are in frame.",
+    });
+    return;
+  }
+  const match = /[A-HJ-NPR-Z0-9]{17}/.exec(trimmed);
+  if (match === null || !VIN_PATTERN.test(match[0])) {
+    res.status(200).json({
+      kind: "low_confidence",
+      reason:
+        `Vision model returned text that does not look like a valid 17-character VIN. Try a clearer photo.`,
+      confidence: 0.4,
+    });
+    return;
+  }
+  res.status(200).json({
+    kind: "resolved",
+    vin: match[0],
+    confidence: 0.95,
+  });
+}
+
+/**
+ * Extract a VIN from a parsed vision-JSON object. Validates against the
+ * ISO 3779 pattern; returns undefined if the value is missing or fails
+ * validation. We deliberately do NOT slice a 17-char window out of a
+ * longer string here — the model was asked for the bare 17 characters,
+ * and if it returned something longer we want the low_confidence branch
+ * to fire so the user re-takes the photo rather than us guessing.
+ */
+function readVinFrom(obj: Record<string, unknown>): string | undefined {
+  const raw = obj.vin;
+  if (typeof raw !== "string") return undefined;
+  const upper = raw.trim().toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, "");
+  return VIN_PATTERN.test(upper) ? upper : undefined;
+}
+
+/**
+ * Extract a license plate from a parsed vision-JSON object. Real US
+ * plates are 5-8 chars after normalization; anything outside that range
+ * is treated as missing so the user gets a "try again" affordance.
+ */
+function readPlateFrom(obj: Record<string, unknown>): string | undefined {
+  const raw = obj.plate;
+  if (typeof raw !== "string") return undefined;
+  const upper = raw.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (upper.length < 5 || upper.length > 8) return undefined;
+  return upper;
+}
+
+/**
+ * Extract a two-letter US state postal code from a parsed vision-JSON
+ * object. Returns undefined for null, missing, or non-conforming input.
+ * The vision prompt explicitly allows null so the client knows to ask.
+ */
+function readStateFrom(obj: Record<string, unknown>): string | undefined {
+  const raw = obj.state;
+  if (typeof raw !== "string") return undefined;
+  const upper = raw.trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(upper) ? upper : undefined;
 }
 
 function isOcrTarget(value: string): value is OcrTarget {
@@ -307,7 +524,8 @@ function isOcrTarget(value: string): value is OcrTarget {
     value === "vin_sticker" ||
     value === "registration_card" ||
     value === "insurance_card" ||
-    value === "driver_license"
+    value === "driver_license" ||
+    value === "vin_or_plate"
   );
 }
 

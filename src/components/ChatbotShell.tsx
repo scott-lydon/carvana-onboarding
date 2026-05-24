@@ -330,13 +330,37 @@ export function ChatbotShell(): JSX.Element {
   );
 
   // OCR hook drives the camera + upload + drag-drop pipelines.
+  //
+  // Two callbacks because the vin_or_plate target can return EITHER a VIN
+  // (17 chars, no state needed) OR a license plate (5-8 chars + a US
+  // state). The chat orchestrator handles each by injecting a structured
+  // user message — "Scanned VIN: ..." or "Scanned plate: ... in ..." —
+  // which the system prompt recognizes and routes to lookup_vin /
+  // lookup_plate respectively. If the model could read the state from
+  // the photo (e.g. "TEXAS" printed above the plate), we include it; if
+  // not, we ask the user explicitly so the lookup doesn't guess.
   const onVinScanned = useCallback(
     (vin: string): void => {
       void sendMessage(`Scanned VIN: ${vin}`);
     },
     [sendMessage],
   );
-  const ocr = useOcrCapture(onVinScanned);
+  const onPlateScanned = useCallback(
+    (args: { plate: string; state?: string }): void => {
+      if (args.state !== undefined) {
+        void sendMessage(`Scanned plate: ${args.plate} in ${args.state}`);
+        return;
+      }
+      // No state visible in the photo — surface the plate but ask the user
+      // for the state in the same turn. The chatbot will then call
+      // lookup_plate once the user types the state.
+      void sendMessage(
+        `Scanned plate: ${args.plate} (state not visible in the photo — what state issued it?)`,
+      );
+    },
+    [sendMessage],
+  );
+  const ocr = useOcrCapture(onVinScanned, onPlateScanned);
 
   // Default the scheduler address state from the latest resolved
   // vehicle's state, if present. Falls back to TX for the demo cohort.
