@@ -57,13 +57,33 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(cors({ origin: corsOrigin }));
 
+// Commit hash baked at build time. Render sets RENDER_GIT_COMMIT for every
+// deploy; if it is unset (local dev / non-Render hosts) we fall back to
+// process.env.GIT_COMMIT, then to "unknown" — never throw, never block
+// startup. Surfacing this through /api/health (and via the dedicated
+// /api/version route) is what lets us deterministically answer "is the
+// deployed app on the commit I just pushed?" without scraping the dashboard.
+const DEPLOYED_COMMIT: string =
+  process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT ?? "unknown";
+
 app.get("/api/health", (_req: Request, res: Response): void => {
   res.json({
     ok: true,
     service: "carvana-onboarding-recovery-layer",
     slice: 0,
+    commit: DEPLOYED_COMMIT,
     timestamp: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
+  });
+});
+
+// Dedicated version endpoint — pairs with /api/health for headless deploy
+// verification. Returns the build-time git commit hash so a CI step or a
+// shell one-liner can confirm the deploy without needing the Render API.
+app.get("/api/version", (_req: Request, res: Response): void => {
+  res.json({
+    commit: DEPLOYED_COMMIT,
+    service: "carvana-onboarding-recovery-layer",
   });
 });
 
