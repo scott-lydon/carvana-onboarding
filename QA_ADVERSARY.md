@@ -154,6 +154,18 @@ Where `npm run perf:smoke` is a 10-second k6 run that produces a smoke-level per
 
 - `src/support-content/cards.ts` — content file, reviewed manually, not subject to drift-testing beyond CAT-12 byte-for-byte match.
 
+### Slice F-Flow categories (2026-05-24 — full post-VIN sell flow)
+
+**CAT-18 — Fabricated offer dollar amount.** Any code path that returns or renders an offer dollar amount NOT computed from `OfferEngine.generateOffer` (or an explicit re-derivation from the published formula in `server/offer/OfferEngine.ts`) is a CAT-18 regression. The deterministic formula is the deliverable — a hardcoded "$23,450" anywhere in the UI or in a test fixture (other than a snapshot of a real `generateOffer` call) is a critical bug. Grep for dollar literals in `src/components/*.tsx`; any string-formatted dollar amount must be derived from props at render time. The same rule applies to "valid through" dates and "valid for X miles" copy — they must come from `OfferResult.validThroughIso` / `validThroughMilesDelta`, never hardcoded.
+
+**CAT-19 — Workspace state drift.** Any code path that updates one of the seven `SellWorkspaceState` slices (`vehicle`, `condition`, `payoff`, `offer`, `pickup`, `paymentMethod`, `contract`) without ALSO sending the corresponding structured chat message (per the conventions block in `server/chat/system-prompt.ts`) is a CAT-19 regression. Workspace state and chat history must agree, because the chatbot orchestrates the flow off the chat messages and the user reads progress off the workspace. Drift between the two confuses both sides. Spot-check by running the e2e happy path and asserting that for each filled workspace slice there is a matching user message of the documented shape.
+
+**CAT-20 — Condition extractor invented damage.** Any test or run where the vision response carries `visibleDamage[]` entries but the source photos do NOT actually depict the damage (i.e. the model hallucinated tags) is a CAT-20 regression. The system prompt at `server/routes/condition.ts:182-191` explicitly forbids inventing damage; an integration test using a known-clean photo set should assert `visibleDamage.length === 0`.
+
+**CAT-21 — exactOptionalPropertyTypes violation.** Any code that materializes an optional property as literal `undefined` (e.g. `{ payoffAmount: undefined }` or `{ trim: undefined }`) instead of OMITTING the key entirely is a CAT-21 regression. This caught real bugs during Slice F-Flow integration (server/chat/tools.ts:480, server/routes/offer.ts:134, server/routes/condition.ts:464, src/components/ChatbotShell.tsx:255). The pattern to use is the conditional spread `...(value !== undefined ? { key: value } : {})`.
+
+**CAT-22 — Progress-bar resurrection.** Any code that mounts a `<ProgressBar />` inside the chat transcript (or any other phase-stage indicator that updates as the chatbot streams) is a CAT-22 regression. The four-phase progress bar was deliberately removed in Slice F when the chat model swapped to Haiku 4.5; the only acceptable in-bubble affordance during streaming is the `.chatbot-typing-dots` indicator. ProgressBar.tsx itself stays in the repo because it's reused by the OCR upload pipeline; only its use inside ChatbotShell's transcript is forbidden.
+
 ### v2 base branch for diff
 
 Still `main`. For v2 slices, diff the slice branch against the most recent v1 main commit OR the v2 baseline commit (which will be tagged `v2-baseline` after the artifact updates land).

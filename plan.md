@@ -1,7 +1,100 @@
 # Plan — Carvana Onboarding Recovery Layer
 
 > Architecture. Component breakdown. Data flow. Decisions. Trade-offs. Sequencing.
-> Last edited 2026-05-22 (v2 PRD update; v2 architecture below is AUTHORITATIVE for the next 2 days; v1 content is preserved further down).
+> Last edited 2026-05-24 (Slice F-Flow update — full post-VIN sell flow added; the Slice F-Flow architecture section below is AUTHORITATIVE for the current build, then the v2 architecture for older context).
+
+---
+
+## Slice F-Flow architecture (2026-05-24) — AUTHORITATIVE
+
+### What changed
+
+The earlier v2 build covered two of Carvana's 14 real seller stages: vehicle lookup and pickup scheduling. Slice F-Flow adds the seven seller-facing stages between them — condition intake, loan/payoff capture, instant offer, payment method selection, contract acknowledgement — plus a live workspace aggregator. (Stages 12 and 14 — in-person inspection and post-sale mailed title transfer — stay out of scope because they happen in the physical world, not the web flow.) The chat model also dropped from Sonnet 4.5 to Haiku 4.5 so first-token latency goes sub-second and the four-phase progress bar can come off.
+
+### Slice F-Flow topology (text)
+
+```
+Browser (React + Vite)
+  ├─ ChatbotShell                (Haiku 4.5 over SSE; routes tool_results to side-panels)
+  │    ├─ OcrCapture             (VIN photo)
+  │    ├─ Scheduler              (pickup slot picker)
+  │    ├─ ConditionIntake        [NEW]  9-slot photo grid → /api/condition/extract
+  │    ├─ PayoffForm             [NEW]  lender + 10-day payoff
+  │    ├─ PaymentMethod          [NEW]  ACH / check / trade credit
+  │    ├─ ContractConsent        [NEW]  single-checkbox POA + BoS + odometer disclosure
+  │    ├─ OfferCard              [NEW]  pure-render breakdown of OfferEngine output
+  │    └─ SellWorkspace          [NEW]  7-section live aggregator (Vehicle, Condition, Title&Loan, Offer, Pickup, Payment, Contract)
+  │
+Server (Express on Node 22)
+  ├─ /api/chat                   (Haiku 4.5 streaming, 10 tools: 5 from v2 + 5 from Slice F-Flow)
+  ├─ /api/lookup/plate, /vin     (VendorCascade — unchanged)
+  ├─ /api/ocr/recognize          (Claude vision — unchanged)
+  ├─ /api/condition/extract      [NEW] multi-image Claude vision (3-12 photos in one call)
+  ├─ /api/offer/generate         [NEW] OfferEngine.generateOffer — pure deterministic compute
+  ├─ /api/schedule/{slots,book}  (unchanged)
+  └─ /api/nps/{submit,summary}   (unchanged)
+```
+
+### Slice F-Flow components
+
+| Component | Responsibility | Inputs | Outputs | Failure modes |
+|---|---|---|---|---|
+| `server/offer/OfferEngine.ts` | Pure deterministic instant-offer formula. The deliverable. | year, make, model, mileage, condition, optional payoff | `OfferResult` with line-itemed breakdown, `validThroughIso`, `validThroughMilesDelta`, `formulaVersion` | throws on programmer-error inputs (negative mileage, year out of range, negative payoff) — caller must validate |
+| `server/routes/offer.ts` | HTTP shim around OfferEngine | JSON request body | 200 OfferResult OR 400 format_error naming the bad field | every validation failure is 400, never 500 |
+| `server/routes/condition.ts` | Multi-image Claude vision; returns extracted mileage + damage tags + suggested tier + 1-4 follow-up questions | 3-12 images (angle + base64 + mediaType) | `ConditionExtractionResult` | 400 format_error on input shape; 502 on non-JSON vision output; 503 on vision API outage |
+| `src/components/ConditionIntake.tsx` | 9-slot photo grid; HEIC-safe base64; `chatbot-typing-dots` while waiting | seller-uploaded images | structured `ConditionExtractionResult` via callback | every error names the angle + reason + fix |
+| `src/components/OfferCard.tsx` | Pure render of `OfferResult`; red callout for negative equity; green callout for net-to-seller | `OfferResult` prop | JSX | n/a (pure) |
+| `src/components/PayoffForm.tsx` | Lender + 10-day payoff capture | nothing | `{lender, payoffAmount}` via callback | inline validation, no submit until both fields valid |
+| `src/components/PaymentMethod.tsx` | Three-radio picker (ACH / check / trade credit) | nothing | `"ach" \| "check" \| "trade_credit"` via callback | no auto-default |
+| `src/components/ContractConsent.tsx` | Plain-English POA + Bill of Sale + Odometer disclosure; one-checkbox gate | nothing | `{acknowledgedAt, items}` via callback | submit disabled until checked |
+| `src/components/SellWorkspace.tsx` | Right-rail aggregator across the 7 sell stages | `SellWorkspaceState` prop | JSX | hidden until any slice has data |
+
+### Slice F-Flow data flow (one happy-path session)
+
+```
+Seller types plate + state
+  → chatbot calls lookup_plate
+    → VendorCascade resolves vehicle
+    → tool_result lands; SellWorkspace.vehicle populated
+  → chatbot calls start_condition_intake
+    → ConditionIntake panel opens
+    → seller uploads 3-9 photos
+    → POST /api/condition/extract → Claude vision
+    → tool_result lands; SellWorkspace.condition populated
+    → chat message "Condition assessment: ..." injected
+  → chatbot asks any followupQuestions inline (gap-fill Q&A, ≤4)
+  → chatbot asks "do you have a loan?"
+    → yes → record_loan_status({hasLien:true}) → PayoffForm opens → captures lender+payoff → SellWorkspace.payoff populated
+    → no  → record_loan_status({hasLien:false}) returns immediately
+  → chatbot calls generate_offer({year, make, model, mileage, condition, payoffAmount?})
+    → OfferEngine.generateOffer runs (deterministic, no network)
+    → tool_result lands; OfferCard renders inline; SellWorkspace.offer populated
+  → seller accepts offer; chatbot calls schedule_pickup
+    → Scheduler panel opens → slot booked → SellWorkspace.pickup populated
+  → chatbot calls select_payment_method
+    → PaymentMethod panel opens → choice recorded → SellWorkspace.paymentMethod populated
+  → chatbot calls acknowledge_contract
+    → ContractConsent panel opens → single checkbox → SellWorkspace.contract populated
+  → chatbot wraps up; NpsSurvey appears
+```
+
+### Slice F-Flow decisions
+
+| Decision | What we chose | Alternative considered | Why |
+|---|---|---|---|
+| Chat model | Haiku 4.5 (env-overridable) | Sonnet 4.5 (the v2 default) | Haiku TTFT is 300-600ms vs Sonnet 1.5-3s; sub-second TTFT lets us drop the four-phase progress bar and present a single typing-dot indicator instead. Sonnet's stronger reasoning isn't needed for chatbot orchestration over tool-use. |
+| Offer engine | Deterministic formula, transparent line-itemed breakdown | Carvana-style ML black box; or fabricated dollar amount with no derivation | Constitution forbids stub data in user-facing aggregates. We don't have Manheim auction comps or dealer turn data, so we ship a formula the user can audit live — every line says "what" and "why". |
+| Condition extraction | Single multi-image vision call (3-12 photos in one prompt) | One vision call per photo | Cross-image reasoning. The model can compare front-left to rear-right bumper alignment and notice prior collision repair, or reconcile odometer reading against visible interior wear. Per-image calls lose this. |
+| Workspace aggregator | Live right-rail panel that grows as data lands | Chat-bubble-only tool cards | The seller loses track mid-conversation. A glanceable aggregate of "what I have / what's left" reduces re-asks and gives the chatbot a single source of truth for what's already captured. |
+| Panel ↔ chat handoff | Panels post a synthesized user message back into the chat (existing `Scheduler` / `OcrCapture` pattern) | Panels write directly into shared state | Keeping the chat history authoritative means the chatbot's next turn sees the new fact in the same shape regardless of whether a user typed it or a panel produced it. One mental model. |
+| Contract acknowledgement | Single checkbox covering POA + Bill of Sale + Odometer Disclosure | Three separate signature blocks | Carvana's real flow is three separate signing flows. Collapsing to one checkbox + plain-English disclosures is the revolutionary simplification. Legally the same; UX is dramatically faster. |
+
+### Slice F-Flow trade-offs (with the "when it would bite" line)
+
+- **No model-specific KBB lookup.** OfferEngine uses a four-tier make table (Luxury/Premium/Mainstream/Economy) instead of a real model-level base-MSRP source. *Why we accept it:* the condition multiplier absorbs model-level variance the table misses, and the alternative (KBB / Edmunds API) is paid and partner-gated. *When it would bite:* an obscure trim variant with a base MSRP wildly different from its tier average. The formula version is pinned in the response so a model-level table swap later is non-breaking.
+- **Vision tier suggestion can be wrong.** The model's `suggestedTier` is the starting point; the seller (or the chatbot, on push-back) can adjust it. *When it would bite:* a seller with a Good-tier car who insists it's Excellent will end up with an inflated offer. The real-world equivalent is the Carvana rep's inspection adjustment at handoff, which we don't model.
+- **No state-specific plate/registration handling at handoff.** The contract acknowledgement is generic. *When it would bite:* a state that requires the seller to physically return plates to the DMV after sale — the chatbot doesn't surface that today. Slice F-Flow followup F.17 (`docs/offer-formula.md`) is also the right home for state checklists.
+- **Single user_action_required path per tool.** A tool returns at most one panel to open. *When it would bite:* a future tool that needed to open two panels in sequence (e.g. ID capture then signature pad) would need to be split into two tools. Not a concern at this scale.
 
 ---
 
