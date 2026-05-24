@@ -121,14 +121,23 @@ describe("CAT-17 adversary — format_error guards fire with a real cascade", ()
     expect(cascade.plateCallCount).toBe(0);
   });
 
-  it("TOOLS array contains exactly the 5 expected named tools for slice A", () => {
+  it("TOOLS array contains every expected named tool for slices A + F", () => {
     const toolNames = TOOLS.map((t) => t.name);
+    // Slice A (lookup + recovery + scheduling + support).
     expect(toolNames).toContain("lookup_plate");
     expect(toolNames).toContain("lookup_vin");
     expect(toolNames).toContain("ocr_recognize");
     expect(toolNames).toContain("schedule_pickup");
     expect(toolNames).toContain("get_support_content");
-    // Verify exact count — a tool added without a dispatcher case silently breaks.
-    expect(TOOLS.length).toBe(5);
+    // Slice F (full post-VIN sell flow: condition → loan → offer → payment → contract).
+    expect(toolNames).toContain("start_condition_intake");
+    expect(toolNames).toContain("record_loan_status");
+    expect(toolNames).toContain("generate_offer");
+    expect(toolNames).toContain("select_payment_method");
+    expect(toolNames).toContain("acknowledge_contract");
+    // Verify exact count — a tool added without a dispatcher case silently breaks
+    // (CAT-17). Bump this number AND add the dispatcher case AND add the tool to
+    // the slice-naming groups above in the SAME commit when a new tool ships.
+    expect(TOOLS.length).toBe(10);
   });
 });

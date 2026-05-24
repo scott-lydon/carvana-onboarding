@@ -23,6 +23,8 @@ import {
 } from "./routes/lookup.js";
 import { isChatConfigured, makeChatHandler } from "./routes/chat.js";
 import { isOcrConfigured, makeOcrHandler } from "./routes/ocr.js";
+import { makeConditionHandler } from "./routes/condition.js";
+import { makeOfferHandler } from "./routes/offer.js";
 import { getDefaultSchedulerDb } from "./scheduler/db.js";
 import { makeBookHandler, makeSlotsHandler } from "./routes/schedule.js";
 import { makeNpsSubmitHandler, makeNpsSummaryHandler } from "./routes/nps.js";
@@ -142,6 +144,34 @@ if (ocrHandler === undefined) {
     `[server] /api/ocr/recognize wired (ocr_configured=${String(isOcrConfigured(process.env.ANTHROPIC_API_KEY))})`,
   );
 }
+
+// v2 Slice F (this commit): condition extraction (multi-image Claude vision)
+// + offer generation (deterministic formula via OfferEngine). Same
+// ANTHROPIC_API_KEY as /api/chat for the vision call. /api/offer/generate
+// is pure compute and works regardless of key state.
+const conditionHandler = makeConditionHandler(process.env.ANTHROPIC_API_KEY);
+if (conditionHandler === undefined) {
+  app.post("/api/condition/extract", (_req: Request, res: Response): void => {
+    res.status(503).json({
+      kind: "configuration_missing",
+      missing_env_var: "ANTHROPIC_API_KEY",
+      signup_url: "https://console.anthropic.com/settings/keys",
+      message:
+        "Condition extraction needs an Anthropic API key (same one /api/chat uses). " +
+        "Set ANTHROPIC_API_KEY in .env.local and restart.",
+    });
+  });
+} else {
+  app.post("/api/condition/extract", (req: Request, res: Response): void => {
+    void conditionHandler(req, res);
+  });
+  console.log("[server] /api/condition/extract wired (vision-backed)");
+}
+const offerHandler = makeOfferHandler();
+app.post("/api/offer/generate", (req: Request, res: Response): void => {
+  offerHandler(req, res);
+});
+console.log("[server] /api/offer/generate wired (deterministic formula)");
 
 // v2 Slice C: scheduler endpoints backed by SQLite with atomic booking.
 // v2 Slice E: NPS micro-survey endpoints share the same SQLite instance.
