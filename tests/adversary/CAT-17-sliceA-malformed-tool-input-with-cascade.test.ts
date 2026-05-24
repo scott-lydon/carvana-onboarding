@@ -121,7 +121,7 @@ describe("CAT-17 adversary — format_error guards fire with a real cascade", ()
     expect(cascade.plateCallCount).toBe(0);
   });
 
-  it("TOOLS array contains every expected named tool for slices A + F", () => {
+  it("TOOLS array contains every expected named tool for slices A + F + Carvana KB", () => {
     const toolNames = TOOLS.map((t) => t.name);
     // Slice A (lookup + recovery + scheduling + support).
     expect(toolNames).toContain("lookup_plate");
@@ -135,9 +135,11 @@ describe("CAT-17 adversary — format_error guards fire with a real cascade", ()
     expect(toolNames).toContain("generate_offer");
     expect(toolNames).toContain("select_payment_method");
     expect(toolNames).toContain("acknowledge_contract");
+    // Carvana-facts KB tool (source-cited official answers).
+    expect(toolNames).toContain("lookup_carvana_facts");
     // Verify exact count — a tool added without a dispatcher case silently breaks
     // (CAT-17). Bump this number AND add the dispatcher case AND add the tool to
     // the slice-naming groups above in the SAME commit when a new tool ships.
-    expect(TOOLS.length).toBe(10);
+    expect(TOOLS.length).toBe(11);
   });
 });
