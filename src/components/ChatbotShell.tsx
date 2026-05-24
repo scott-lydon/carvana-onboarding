@@ -740,22 +740,42 @@ async function streamChatResponse(args: {
   onEvent: (event: SseEvent) => void;
   onPhase: (phase: ProgressPhase["id"]) => void;
 }): Promise<void> {
+  // Render free-tier dyno sleeps after ~15 min idle. The first request
+  // after sleep usually fails at the TCP / TLS layer because Cloudflare
+  // cannot reach the dyno during the 30–60s cold-start window. The
+  // browser surfaces that as `TypeError: Load failed` (Safari) or
+  // `TypeError: Failed to fetch` (Chrome/Firefox), which the user
+  // (rightly) experienced as "works then fails then works then fails".
+  //
+  // Retry the INITIAL fetch only — once we have a response (any HTTP
+  // status), we surface the body verbatim, because retrying 4xx/5xx
+  // would mask real backend errors. Phase callback flips to "reading"
+  // with an explicit cold-start hint so the user sees the retry happen
+  // rather than a frozen UI.
+  const RETRY_DELAYS_MS = [1000, 3000, 7000]; // total ≤ 11s extra wait
   let response: Response;
-  try {
-    response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: args.messages }),
-    });
-  } catch (err) {
-    // Network-level failure (offline, CORS, Safari mid-stream drop on
-    // the request even before headers). Re-throw with a slightly more
-    // diagnostic message than the bare TypeError so the user sees a
-    // clear next step.
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Network request to /api/chat failed (${msg}). Check your connection and try again.`,
-    );
+  for (let attempt = 0; ; attempt++) {
+    try {
+      response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: args.messages }),
+      });
+      break;
+    } catch (err) {
+      // Only retry network-level errors (TypeError from fetch). Anything
+      // else is a programming bug we should surface as-is.
+      const isNetworkError = err instanceof TypeError;
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (!isNetworkError || delay === undefined) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Network request to /api/chat failed (${msg}). The server may be cold-starting — wait 30 seconds and try again. If it keeps failing, check your connection.`,
+        );
+      }
+      args.onPhase("reading");
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
   if (!response.ok) {
     // Try to read a structured JSON body for the precise reason
