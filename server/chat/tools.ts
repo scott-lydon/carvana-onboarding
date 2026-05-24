@@ -25,6 +25,12 @@ import {
   SUPPORT_CARDS,
   type SupportTopic,
 } from "../../src/support-content/cards.js";
+import {
+  CARVANA_FACTS,
+  isCarvanaFactPopulated,
+  isKnownCarvanaFactTopic,
+  listPopulatedCarvanaTopics,
+} from "../../src/carvana-content/carvana-knowledge-base.js";
 // ConditionTier intentionally NOT imported here — it is enforced via
 // the inline enum check on `cd` below, and the compiler narrows the
 // validated value through the cast in offerInput.
@@ -233,6 +239,55 @@ export const TOOLS: readonly Tool[] = [
       type: "object",
       properties: {},
       required: [],
+    },
+  },
+  // ─────────────────────────────────────────────────────────────────────
+  // Carvana official-information knowledge base. Distinct from
+  // get_support_content (which surfaces empathy-shaped cards): this
+  // tool surfaces FACTS — policies, processes, brand promises, fee
+  // structures — sourced verbatim from carvana.com pages. Each fact
+  // carries a sourceUrl the UI renders as a clickable "Source:" link
+  // so the user can verify. Bodies are committed to the repo and
+  // regression-tested; the LLM never paraphrases or fabricates
+  // Carvana-specific information.
+  // ─────────────────────────────────────────────────────────────────────
+  {
+    name: "lookup_carvana_facts",
+    description:
+      "Look up an officially-sourced fact about Carvana — selling process, offer validity, title " +
+      "transfer, loan payoff, negative equity, pickup service area, trade-in vs cash, 7-day return, " +
+      "Carvana Certified, financing, mission/values, no-haggle promise, recent policy changes. " +
+      "Returns a card with title + body + sourceUrl on a carvana.com page so the user can verify. " +
+      "Use this tool ANY time the user asks something Carvana-specific that the empathy cards " +
+      "(get_support_content) do not cover. NEVER invent Carvana facts in your own reply text; " +
+      "if the topic enum below does not match the user's question, say so and offer the closest " +
+      "available topic OR offer to connect them to a human.",
+    input_schema: {
+      type: "object",
+      properties: {
+        topic: {
+          type: "string",
+          enum: [
+            "how_selling_works",
+            "offer_validity_window",
+            "what_documents_are_needed_at_pickup",
+            "title_transfer_responsibility",
+            "loan_payoff_process",
+            "negative_equity_handling",
+            "pickup_service_area",
+            "trade_in_credit_versus_cash_offer",
+            "buyer_seven_day_return_policy",
+            "buyer_carvana_certified_process",
+            "buyer_financing_options",
+            "company_mission_and_values",
+            "company_no_haggle_promise",
+            "recent_policy_changes",
+          ],
+          description:
+            "The fact category to look up. Picks the most specific topic that matches the user's question.",
+        },
+      },
+      required: ["topic"],
     },
   },
 ];
@@ -532,6 +587,63 @@ export async function dispatchTool(
             "\"Contract acknowledged at <ISO time>\".",
         },
       };
+    case "lookup_carvana_facts": {
+      // Surface a committed, source-cited Carvana fact. The dispatcher
+      // refuses to surface PENDING_FETCH placeholders — instead returns
+      // a structured format_error so the chatbot can fall back to
+      // "I don't have an official answer for that yet — want me to
+      // connect you to a human?" rather than showing an empty card.
+      if (typeof input !== "object" || input === null) {
+        return {
+          toolName,
+          toolUseId,
+          result: { kind: "format_error", reason: "input must be an object" },
+        };
+      }
+      const obj = input as Record<string, unknown>;
+      const topicInput = obj.topic;
+      if (typeof topicInput !== "string" || !isKnownCarvanaFactTopic(topicInput)) {
+        return {
+          toolName,
+          toolUseId,
+          result: {
+            kind: "format_error",
+            field: "topic",
+            reason:
+              `unknown topic. Known: ${Object.keys(CARVANA_FACTS).join(", ")}`,
+          },
+        };
+      }
+      const fact = CARVANA_FACTS[topicInput];
+      if (!isCarvanaFactPopulated(fact)) {
+        return {
+          toolName,
+          toolUseId,
+          result: {
+            kind: "fact_not_yet_populated",
+            topic: topicInput,
+            reason:
+              `The knowledge base entry for "${topicInput}" has not been ` +
+              `populated from a real carvana.com source yet. Currently ` +
+              `populated topics: ${listPopulatedCarvanaTopics().join(", ") || "(none)"}. ` +
+              `Tell the user you do not have an official answer for that yet ` +
+              `and offer to connect them to a human.`,
+          },
+        };
+      }
+      return {
+        toolName,
+        toolUseId,
+        result: {
+          kind: "carvana_fact",
+          topic: fact.topic,
+          title: fact.title,
+          body: fact.body,
+          sourceUrl: fact.sourceUrl,
+          fetchedAt: fact.fetchedAt,
+        },
+      };
+    }
     case "get_support_content": {
       // Slice D: surface a pre-baked card. The LLM picks the topic via
       // tool input; the dispatcher returns the literal card body

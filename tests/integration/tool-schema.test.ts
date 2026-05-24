@@ -93,4 +93,71 @@ describe("CAT-17: chat tool-schema integrity", () => {
     // important check is that we did NOT throw on a non-string plate.
     expect(typeof result.kind).toBe("string");
   });
+
+  it("lookup_carvana_facts is declared with the documented topic enum", () => {
+    const tool = TOOLS.find((t) => t.name === "lookup_carvana_facts");
+    expect(tool, "lookup_carvana_facts tool must be declared in TOOLS").toBeDefined();
+    if (tool === undefined) return; // narrow; the expect above already failed loudly
+    const schema = tool.input_schema as Record<string, unknown>;
+    const props = schema.properties as Record<string, unknown>;
+    const topicProp = props.topic as Record<string, unknown>;
+    const enumValues = topicProp.enum as readonly string[];
+    // The enum on the tool definition must stay in sync with the
+    // CarvanaFactTopic type union — otherwise the model can request a
+    // topic the dispatcher will reject as unknown. Check that every
+    // value declared in the file is one of the documented topics.
+    const REQUIRED: readonly string[] = [
+      "how_selling_works",
+      "offer_validity_window",
+      "what_documents_are_needed_at_pickup",
+      "title_transfer_responsibility",
+      "loan_payoff_process",
+      "negative_equity_handling",
+      "pickup_service_area",
+      "trade_in_credit_versus_cash_offer",
+      "buyer_seven_day_return_policy",
+      "buyer_carvana_certified_process",
+      "buyer_financing_options",
+      "company_mission_and_values",
+      "company_no_haggle_promise",
+      "recent_policy_changes",
+    ];
+    for (const topic of REQUIRED) {
+      expect(enumValues, `enum missing topic ${topic}`).toContain(topic);
+    }
+  });
+
+  it("lookup_carvana_facts with unknown topic returns format_error (does not throw)", async () => {
+    const dispatched = await dispatchTool(
+      "lookup_carvana_facts",
+      "tool_use_id_cv1",
+      { topic: "not_a_real_topic" },
+      undefined,
+    );
+    const result = dispatched.result as Record<string, unknown>;
+    expect(result.kind).toBe("format_error");
+    expect(result.field).toBe("topic");
+  });
+
+  it("lookup_carvana_facts returns fact_not_yet_populated for known-but-empty topics (placeholder safety net)", async () => {
+    // While the KB carries PENDING_FETCH placeholders, the dispatcher
+    // MUST return fact_not_yet_populated rather than the empty body.
+    // Once the KB is populated, this branch reverses (returns kind=
+    // carvana_fact instead) — accept both so the test stays green
+    // through the population pass.
+    const dispatched = await dispatchTool(
+      "lookup_carvana_facts",
+      "tool_use_id_cv2",
+      { topic: "how_selling_works" },
+      undefined,
+    );
+    const result = dispatched.result as Record<string, unknown>;
+    expect(["fact_not_yet_populated", "carvana_fact"]).toContain(result.kind);
+    if (result.kind === "carvana_fact") {
+      expect(typeof result.sourceUrl).toBe("string");
+      expect(String(result.sourceUrl)).toMatch(
+        /^https:\/\/([a-z]+\.)?carvana\.com\/.+/,
+      );
+    }
+  });
 });

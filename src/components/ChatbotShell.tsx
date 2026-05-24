@@ -919,6 +919,36 @@ function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
       </div>
     );
   }
+  if (card.name === "lookup_carvana_facts" && isCarvanaFact(result)) {
+    // Carvana official fact. Distinguished from support cards by the
+    // green "Official Carvana information" pill at the top and the
+    // clickable "Source: carvana.com/..." link at the bottom. The
+    // sourceUrl is opened in a new tab (rel=noopener) so a redirect
+    // target can't access window.opener.
+    return (
+      <div style={carvanaFactCardStyle}>
+        <div style={carvanaFactPillStyle}>Official Carvana information</div>
+        <strong style={{ fontSize: 14 }}>{result.title}</strong>
+        <div style={{ marginTop: 4 }}>{result.body}</div>
+        <div style={carvanaFactSourceWrapStyle}>
+          Source:{" "}
+          <a
+            href={result.sourceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={carvanaFactSourceLinkStyle}
+          >
+            {abbreviateCarvanaUrl(result.sourceUrl)}
+          </a>
+          {result.fetchedAt !== "" ? (
+            <span style={carvanaFactFetchedAtStyle}>
+              {" "}· fetched {result.fetchedAt}
+            </span>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
   // Slice F: render the OfferCard inline when generate_offer returns.
   if (card.name === "generate_offer" && isOfferResult(result)) {
     return <OfferCard result={result} />;
@@ -944,6 +974,49 @@ function isSupportContent(
     typeof obj.title === "string" &&
     typeof obj.body === "string"
   );
+}
+
+/**
+ * Type guard for the carvana_fact tool_result shape returned by
+ * lookup_carvana_facts. Validates every field the renderer touches so
+ * a future server-side rename surfaces as a missing card rather than
+ * a runtime crash (the discriminator path falls through to the
+ * generic raw-payload card).
+ */
+function isCarvanaFact(value: unknown): value is {
+  kind: "carvana_fact";
+  topic: string;
+  title: string;
+  body: string;
+  sourceUrl: string;
+  fetchedAt: string;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.kind === "carvana_fact" &&
+    typeof obj.topic === "string" &&
+    typeof obj.title === "string" &&
+    typeof obj.body === "string" &&
+    typeof obj.sourceUrl === "string" &&
+    typeof obj.fetchedAt === "string"
+  );
+}
+
+/**
+ * Render a long carvana.com URL as something human-scannable in the
+ * card footer. Strips the protocol and the trailing slash so the user
+ * sees "carvana.com/sell-my-car" rather than the full URL. The href
+ * stays full so the click still resolves correctly.
+ */
+function abbreviateCarvanaUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, "");
+    return `${u.host}${path}`;
+  } catch {
+    return url;
+  }
 }
 
 /**
@@ -1304,6 +1377,47 @@ const supportCardStyle: React.CSSProperties = {
   maxWidth: "85%",
   fontSize: 13,
   lineHeight: 1.45,
+};
+const carvanaFactCardStyle: React.CSSProperties = {
+  // Light-green card differentiates "official Carvana info" from the
+  // blue "support content" empathy cards. The colors are intentionally
+  // similar to the existing vehicleCardStyle so the chat feels visually
+  // coherent without a third unique palette.
+  background: "#f0fdf4",
+  border: "1px solid #86efac",
+  color: "#14532d",
+  padding: "10px 14px",
+  borderRadius: 10,
+  maxWidth: "85%",
+  fontSize: 13,
+  lineHeight: 1.45,
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+};
+const carvanaFactPillStyle: React.CSSProperties = {
+  alignSelf: "flex-start",
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: 0.5,
+  color: "#166534",
+  background: "#dcfce7",
+  border: "1px solid #86efac",
+  padding: "2px 8px",
+  borderRadius: 999,
+};
+const carvanaFactSourceWrapStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontSize: 11,
+  color: "#15803d",
+};
+const carvanaFactSourceLinkStyle: React.CSSProperties = {
+  color: "#15803d",
+  textDecoration: "underline",
+};
+const carvanaFactFetchedAtStyle: React.CSSProperties = {
+  color: "#475569",
 };
 const preStyle: React.CSSProperties = {
   fontSize: 11,
