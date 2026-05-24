@@ -226,11 +226,31 @@ export function useOcrCapture(
   // When the stream attaches, wire it to the <video> and wait for the
   // first frame BEFORE allowing capture. play() can be rejected (autoplay
   // policy) — surface that as a specific error rather than a black box.
+  //
+  // IMPORTANT — strobe-prevention contract.
+  // This effect MUST depend only on the stream identity (`cameraStream`),
+  // never on the full `status` object. If it depended on `status`, every
+  // setStatus inside the effect (e.g. flipping `ready` to true) would
+  // create a new status reference, fire this effect's cleanup, re-attach
+  // srcObject, restart play(), and spawn a fresh RAF loop. That loop
+  // would call setStatus again, and so on, many times per second. The
+  // result was a seizure-inducing strobe on the camera preview (Capture
+  // button rapidly toggling between "Starting preview..." and "Capture",
+  // dark blue video tile flickering on each srcObject reassignment).
+  // The `setStatus` updater below ALSO guards against this by returning
+  // `prev` unchanged when `ready` is already true, so even if the effect
+  // were to re-run by accident it would not produce a new object.
+  const cameraStream =
+    status.kind === "camera_open" ? status.stream : null;
   useEffect(() => {
-    if (status.kind !== "camera_open") return;
+    if (cameraStream === null) return;
     const video = videoRef.current;
     if (video === null) return;
-    video.srcObject = status.stream;
+    // Re-assigning srcObject to the same MediaStream can briefly reload
+    // the frame buffer on some browsers, so guard against it explicitly.
+    if (video.srcObject !== cameraStream) {
+      video.srcObject = cameraStream;
+    }
     let cancelled = false;
     const onLoaded = (): void => {
       void video
@@ -243,7 +263,12 @@ export function useOcrCapture(
             if (cancelled) return;
             if (video.videoWidth > 0 && video.videoHeight > 0) {
               setStatus((prev) =>
-                prev.kind === "camera_open" ? { ...prev, ready: true } : prev,
+                // Return the SAME reference when there is nothing to
+                // change. React bails on identical state and skips the
+                // re-render — which is what stops the strobe loop dead.
+                prev.kind !== "camera_open" || prev.ready
+                  ? prev
+                  : { ...prev, ready: true },
               );
             } else {
               window.requestAnimationFrame(tick);
@@ -265,7 +290,7 @@ export function useOcrCapture(
       cancelled = true;
       video.removeEventListener("loadedmetadata", onLoaded);
     };
-  }, [status]);
+  }, [cameraStream]);
 
   const handleCameraCapture = useCallback(async () => {
     if (status.kind !== "camera_open" || !status.ready) return;
