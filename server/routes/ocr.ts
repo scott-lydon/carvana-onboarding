@@ -23,6 +23,14 @@
 import type { Request, Response } from "express";
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
+// heic-convert is a pure-JS HEIC decoder (libheif compiled to WASM). We
+// need it because sharp's prebuilt binary on Render's linux-x64 runtime
+// DOES NOT include libheif (Pixelplumbing strips HEIF/AVIF from the
+// prebuilt because libheif's upstream is GPL-tainted). Without this,
+// every iPhone photo (HEIC by default) failed conversion server-side and
+// the user saw the unhelpful "save as JPG/PNG and try again" message.
+// See https://sharp.pixelplumbing.com/install#prebuilt-binaries.
+import convertHeic from "heic-convert";
 
 const VISION_MODEL = "claude-sonnet-4-5";
 const VISION_MAX_TOKENS = 256;
@@ -141,31 +149,92 @@ export function makeOcrHandler(
     }
 
     // Transcode anything Anthropic vision can't handle natively.
+    //
+    // Two-stage conversion:
+    //   1. If HEIC/HEIF → decode with heic-convert (pure-WASM libheif).
+    //      The prebuilt sharp on Render Linux has no libheif support.
+    //      The decoded JPEG buffer is then fed to sharp for stage 2.
+    //   2. Everything else (or the heic-convert output) → sharp .rotate()
+    //      honors EXIF orientation and .jpeg() bounds file size for the
+    //      vision call.
+    //
+    // Failure messages name the EXACT stage that broke and the underlying
+    // error class, so the user sees something actionable instead of a
+    // generic "save as JPG/PNG and try again".
     let payloadData: string;
     let payloadMediaType: AnthropicMediaType;
     if (isAnthropicNative(mediaTypeInput)) {
       payloadData = imageInput;
       payloadMediaType = mediaTypeInput;
     } else {
+      let stageBuffer: Buffer;
       try {
-        const buffer = Buffer.from(imageInput, "base64");
-        const converted = await sharp(buffer)
-          .rotate()             // honor EXIF orientation
+        stageBuffer = Buffer.from(imageInput, "base64");
+        if (stageBuffer.byteLength === 0) {
+          throw new Error("decoded image buffer is 0 bytes");
+        }
+      } catch (err) {
+        console.error("[ocr] base64 decode failed — investigate:", err);
+        sendJsonError(res, 400, {
+          kind: "format_error",
+          field: "image",
+          reason:
+            "Could not decode the base64 image payload. The upload was empty or corrupted in transit. Try again.",
+        });
+        return;
+      }
+
+      const isHeic =
+        mediaTypeInput === "image/heic" || mediaTypeInput === "image/heif";
+      if (isHeic) {
+        try {
+          // convertHeic returns an ArrayBuffer-like; wrap in Buffer.
+          const jpegFromHeic = await convertHeic({
+            buffer: stageBuffer as unknown as ArrayBufferLike,
+            format: "JPEG",
+            quality: 0.92,
+          });
+          stageBuffer = Buffer.from(jpegFromHeic);
+        } catch (err) {
+          const detail =
+            err instanceof Error
+              ? `${err.name}: ${err.message}`
+              : "unknown error";
+          console.error(
+            `[ocr] heic-convert failed for ${mediaTypeInput} — investigate (size=${String(stageBuffer.byteLength)}B):`,
+            err,
+          );
+          sendJsonError(res, 400, {
+            kind: "format_error",
+            field: "image",
+            reason:
+              `HEIC decode failed (${detail}). The file may not be a valid HEIC/HEIF image, or the encoder is one we have not seen yet. ` +
+              `As a workaround you can email the photo to yourself — Mail auto-converts HEIC to JPEG — and re-upload it.`,
+          });
+          return;
+        }
+      }
+
+      try {
+        const converted = await sharp(stageBuffer)
+          .rotate() // honor EXIF orientation
           .jpeg({ quality: 88 }) // good vision quality, modest file size
           .toBuffer();
         payloadData = converted.toString("base64");
         payloadMediaType = "image/jpeg";
       } catch (err) {
+        const detail =
+          err instanceof Error ? `${err.name}: ${err.message}` : "unknown error";
         console.error(
-          `[ocr] failed to transcode ${mediaTypeInput} → image/jpeg — investigate:`,
+          `[ocr] sharp transcode failed for ${mediaTypeInput} — investigate (stage buffer size=${String(stageBuffer.byteLength)}B):`,
           err,
         );
         sendJsonError(res, 400, {
           kind: "format_error",
           field: "image",
           reason:
-            `Could not convert ${mediaTypeInput} to a vision-supported format. ` +
-            `Take a fresh photo or save as JPG/PNG and try again.`,
+            `Image re-encode to JPEG failed at the sharp stage (${detail}). The source file (${mediaTypeInput}) decoded ` +
+            `but could not be normalized for the vision call. Try a different photo.`,
         });
         return;
       }
