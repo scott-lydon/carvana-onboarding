@@ -154,6 +154,20 @@ export class CarsXEAdapter implements VendorAdapter {
     }
     const obj = body as Record<string, unknown>;
     if (obj.success === false) {
+      // Log the vendor's `error` / `message` field so we can tell apart
+      // "no record" from "plate format invalid", "key over quota", or
+      // "this VIN is on a no-decode list". The user-facing response is
+      // still `not_found` — we don't surface vendor strings — but the
+      // operator sees the real reason on the next investigation.
+      const vendorReason =
+        typeof obj.error === "string"
+          ? obj.error
+          : typeof obj.message === "string"
+            ? obj.message
+            : "no `error` or `message` field on CarsXE response";
+      console.warn(
+        `[carsxe] success:false for ${url.replace(/key=[^&]+/, "key=REDACTED")} — vendor reason: ${vendorReason}`,
+      );
       return {
         kind: "not_found",
         attemptedVendors: [this.name],
@@ -166,6 +180,16 @@ export class CarsXEAdapter implements VendorAdapter {
       // 200 OK with a body that doesn't carry the vehicle fields we need.
       // Treat as not_found (vendor reached us, vendor doesn't have the
       // plate). Distinct from infrastructure failure.
+      //
+      // Log the response keys so we can tell whether CarsXE is sending a
+      // shape we don't recognize (e.g. v2 endpoint launch with renamed
+      // fields) vs an empty-record response. Critical for diagnosing the
+      // exact failure mode in production logs.
+      console.warn(
+        `[carsxe] 200 OK but parseCarsXEVehicle returned undefined; ` +
+          `response keys: ${JSON.stringify(Object.keys(obj))}. ` +
+          `Full body (first 500 chars): ${JSON.stringify(obj).slice(0, 500)}`,
+      );
       return {
         kind: "not_found",
         attemptedVendors: [this.name],
