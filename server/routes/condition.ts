@@ -387,13 +387,39 @@ export function makeConditionHandler(
   };
 }
 
+/**
+ * Anthropic's vision API rejects any image > 5 MB decoded. Anything
+ * larger than this threshold gets resampled even if it's an
+ * "Anthropic-native" format. 4 MB raw == ~5.3 MB base64; safely below
+ * the 5 MB decoded cap with margin.
+ */
+const NATIVE_RESAMPLE_THRESHOLD_BYTES = 4_000_000;
+
 /** Decode + transcode one image to Anthropic-native JPEG. */
 async function normalizeForVision(
   base64: string,
   mediaType: AcceptedMediaType,
 ): Promise<{ data: string; mediaType: AnthropicMediaType }> {
   if (isAnthropicNative(mediaType)) {
-    return { data: base64, mediaType };
+    // Defense-in-depth: the client compresses oversize images before
+    // sending, but if a client somehow bypasses that (older bundle
+    // cached, custom integration, future regression) we still must not
+    // pass an oversized native image to Anthropic. Resample if over the
+    // threshold; otherwise pass through unchanged.
+    const decodedBytes = Math.floor((base64.length * 3) / 4);
+    if (decodedBytes <= NATIVE_RESAMPLE_THRESHOLD_BYTES) {
+      return { data: base64, mediaType };
+    }
+    const sourceBuffer = Buffer.from(base64, "base64");
+    const resampled = await sharp(sourceBuffer)
+      .rotate()
+      .resize({ width: 2400, height: 2400, fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    console.warn(
+      `[condition] native-format image was ${String(decodedBytes)}B (>${String(NATIVE_RESAMPLE_THRESHOLD_BYTES)}B threshold) — resampled to ${String(resampled.byteLength)}B JPEG. Client-side compression should have caught this; check the client bundle version.`,
+    );
+    return { data: resampled.toString("base64"), mediaType: "image/jpeg" };
   }
   let buffer = Buffer.from(base64, "base64");
   if (buffer.byteLength === 0) {
@@ -407,7 +433,11 @@ async function normalizeForVision(
     });
     buffer = Buffer.from(jpegFromHeic);
   }
-  const transcoded = await sharp(buffer).rotate().jpeg({ quality: 86 }).toBuffer();
+  const transcoded = await sharp(buffer)
+    .rotate()
+    .resize({ width: 2400, height: 2400, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 86 })
+    .toBuffer();
   return { data: transcoded.toString("base64"), mediaType: "image/jpeg" };
 }
 

@@ -36,6 +36,12 @@ import {
 } from "react";
 import type { ChangeEvent, JSX } from "react";
 import { ProgressBar, type ProgressPhase } from "./ProgressBar.tsx";
+import {
+  compressImageIfNeeded,
+  EncodeError,
+  ImageDecodeError,
+  StillTooLargeError,
+} from "./imageCompression.ts";
 
 export interface OcrCaptureProps {
   /** Called with the recognized 17-char VIN when extraction succeeds. */
@@ -144,15 +150,46 @@ export function useOcrCapture(
   // paths. Wraps the upload with phased progress and named errors at
   // every step where an empty payload could leak through.
   const submitImageFile = useCallback(
-    async (file: File): Promise<void> => {
-      if (file.size === 0) {
+    async (rawFile: File): Promise<void> => {
+      if (rawFile.size === 0) {
         setStatus({
           kind: "error",
-          message: `Picked image is 0 bytes (${file.name || "unnamed"}). Try a different photo.`,
+          message: `Picked image is 0 bytes (${rawFile.name || "unnamed"}). Try a different photo.`,
         });
         return;
       }
       setStatus({ kind: "uploading", phase: "compress" });
+      // Browser-side downscale BEFORE encoding. Anthropic's vision API
+      // rejects images > 5 MB; iPhone JPEGs are routinely 5-8 MB straight
+      // off the camera and our server's "Anthropic native" passthrough
+      // doesn't re-encode JPEG/PNG/WebP. This is the root-cause fix; the
+      // previous failure mode was the cryptic 400 from the server route
+      // surfacing the literal Anthropic message.
+      let file = rawFile;
+      try {
+        file = await compressImageIfNeeded(rawFile);
+      } catch (err) {
+        if (
+          err instanceof StillTooLargeError ||
+          err instanceof ImageDecodeError ||
+          err instanceof EncodeError
+        ) {
+          setStatus({
+            kind: "error",
+            message: err.message,
+          });
+          if (fileInputRef.current !== null) fileInputRef.current.value = "";
+          return;
+        }
+        // Unknown compression failure — log but continue with the
+        // original file; the server has its own resample stage as
+        // defense in depth and will surface a specific error if it
+        // can't handle the upload either.
+        console.warn(
+          "[OcrCapture] compressImageIfNeeded threw an unexpected error; falling back to original file. Error:",
+          err,
+        );
+      }
       try {
         const base64 = await fileToBase64(file);
         if (base64.length < 100) {

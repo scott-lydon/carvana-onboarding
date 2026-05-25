@@ -189,8 +189,53 @@ export function makeOcrHandler(
     let payloadData: string;
     let payloadMediaType: AnthropicMediaType;
     if (isAnthropicNative(mediaTypeInput)) {
-      payloadData = imageInput;
-      payloadMediaType = mediaTypeInput;
+      // Defense-in-depth: the client compresses oversize images before
+      // sending, but if a client somehow bypasses that (older bundle
+      // cached, custom integration, future regression) we still must
+      // not pass an oversized native image to Anthropic — its vision
+      // API hard-rejects > 5 MB with a cryptic 400. Resample here when
+      // we detect the payload is too large.
+      //
+      // Threshold: 4 MB raw image bytes (the base64 string is ~33%
+      // larger than the decoded bytes). Anthropic measures decoded
+      // bytes, so 4 MB raw == ~5.3 MB base64 == safely below the 5 MB
+      // decoded cap with margin.
+      const decodedBytes = Math.floor((imageInput.length * 3) / 4);
+      const NATIVE_RESAMPLE_THRESHOLD_BYTES = 4_000_000;
+      if (decodedBytes > NATIVE_RESAMPLE_THRESHOLD_BYTES) {
+        try {
+          const sourceBuffer = Buffer.from(imageInput, "base64");
+          const resampled = await sharp(sourceBuffer)
+            .rotate()
+            .resize({ width: 2400, height: 2400, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 85 })
+            .toBuffer();
+          payloadData = resampled.toString("base64");
+          payloadMediaType = "image/jpeg";
+          console.warn(
+            `[ocr] native-format image was ${String(decodedBytes)}B (>${String(NATIVE_RESAMPLE_THRESHOLD_BYTES)}B threshold) — resampled to ${String(resampled.byteLength)}B JPEG. Client-side compression should have caught this; check the client bundle version.`,
+          );
+        } catch (err) {
+          const detail =
+            err instanceof Error
+              ? `${err.name}: ${err.message}`
+              : "unknown error";
+          console.error(
+            `[ocr] native-format resample failed (decoded ${String(decodedBytes)}B, mediaType ${mediaTypeInput}):`,
+            err,
+          );
+          sendJsonError(res, 400, {
+            kind: "format_error",
+            field: "image",
+            reason:
+              `Photo is ${String(Math.round(decodedBytes / 1_048_576))} MB which is over the 5 MB vision-API limit, and the server-side resample step also failed (${detail}). Pick a smaller photo or one taken at lower resolution.`,
+          });
+          return;
+        }
+      } else {
+        payloadData = imageInput;
+        payloadMediaType = mediaTypeInput;
+      }
     } else {
       let stageBuffer: Buffer;
       try {
