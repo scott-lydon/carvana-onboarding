@@ -277,6 +277,124 @@ This verifies the per-tile fix did not break the existing "drop a VIN photo anyw
 
 ---
 
+## Side flow G — OCR confusable-character recovery on plate miss (added 2026-05-24)
+
+Reproduces the bug reported on 2026-05-24: a license plate photographed in
+the chat had the digit `7` misread by the vision model as `1`, and the plate
+lookup came back not-found with no way to recover without retaking the
+photo. The fix is server-side confusable-permutation expansion plus an
+inline `PlateInterpretationsWidget` rendered on every plate-lookup miss.
+
+The confusable pairs the generator covers, with one-line rationale each:
+`1 ↔ 7` (top of stem clipped in glare), `7 ↔ T` (serif on the 7 reads as
+the T crossbar — observed in production on 2026-05-24), `E ↔ F` (the
+bottom horizontal of an E washes out in low-contrast captures and reads
+as an F — observed in production on 2026-05-24), `0 ↔ O ↔ Q ↔ D` (closed
+glyphs), `8 ↔ B`, `5 ↔ S`, `2 ↔ Z`, `6 ↔ G`, `4 ↔ A`, and `1 ↔ I`
+(legality override: real US plates can carry I, so we still emit the swap
+even though VINs forbid it).
+
+When adding any future pair: pick something the OCR has actually been
+caught confusing (note the observed-on date next to the pair). Avoid
+adding speculative pairs — every extra pair multiplies the permutation
+fan-out and increases vendor cost on every miss.
+
+### G.1 — Photographed plate with a 7 mis-read as a 1
+
+1. Refresh **https://carvana-onboarding.onrender.com**.
+2. Tap the green **"Scan VIN with camera"** button and capture (or upload)
+   a license plate photo where the real plate is `XRJ4041` (Texas) but a
+   sun-glare or pixel quirk causes the OCR to return `XRJ4041` with the
+   trailing `1` actually being a `7`, i.e. the wire-level scanned text is
+   `XRJ4047`. (Easiest reproduction: upload
+   `/Users/scottlydon/Desktop/Clutter/iOS/carvana-onboarding/test-plates/IMG_6915_glare_seven.jpg`
+   if present; otherwise simulate by typing `my plate is XRJ4047 in Texas`
+   into the chat input box directly.)
+3. **Within 3 seconds you should see:**
+   - The assistant calls `lookup_plate`, the cascade returns not-found,
+     then automatically fans out to confusable permutations (`XRJ4041`,
+     `XRJ4047`, `XRJ40A7`, etc.). Any permutation that resolves becomes a
+     candidate.
+   - An inline **"Did you mean..." widget** renders below the assistant's
+     honest-error message, with up to 6 ranked candidate cards. Each card
+     shows the plate string with the swapped character(s) visually
+     diff-highlighted (the substituted character drawn in a contrasting
+     color with a small caret above it), the resolved year + make + model
+     when known, and a `Use this plate` button.
+   - The card for `XRJ4041` (the real plate) shows `2021 Toyota Highlander`
+     and sits at the top of the list.
+   - Below the candidate cards, two secondary actions are always visible
+     even when zero permutations resolved: `Retake photo` (re-opens the
+     camera) and `Type the plate myself` (opens a small inline input).
+4. Click `Use this plate` on the `XRJ4041` candidate.
+5. **You should see:** the assistant proceeds to Stage 3 (condition
+   assessment) with `2021 Toyota Highlander` in the right sidebar.
+
+**Pass:** Widget shows on every miss. Real plate appears as a candidate.
+Selecting a candidate continues the flow. Diff highlight is visible on the
+swapped digit. `Retake photo` and `Type the plate myself` are always
+present, including when zero permutations resolved.
+
+### G.2 — Plate with multiple confusable characters (zero-hit case)
+
+1. Refresh. Type into the chat input box: `my plate is 800BB5 in Texas`
+   (deliberately non-existent — all digits are confusable shapes).
+2. **You should see:** the assistant returns the honest not-found message
+   and the widget renders with the candidate list **empty** ("No close
+   matches found in our vendor data"), but the two secondary actions
+   (`Retake photo`, `Type the plate myself`) are still visible.
+3. Click `Type the plate myself`, type `XRJ4041`, press Enter.
+4. **You should see:** the assistant runs `lookup_plate` with the typed
+   plate and resolves the 2021 Toyota Highlander.
+
+**Pass:** Widget renders even on zero hits. Free-text override path
+completes the lookup.
+
+### G.1b — Same plate photo, OCR mis-reads the 7 as a T (letter-vs-digit)
+
+This is the SAME glare scenario as G.1 but landing on the other side of
+the 7-vs-T ambiguity instead of the 7-vs-1 ambiguity. Both are real
+captures observed on 2026-05-24.
+
+1. Refresh. Either:
+   - Upload a photo where the actual plate is `XRJ4047` (Texas) but the
+     vision model returns `XRJ404T` (the serif on the 7 reads as the T
+     crossbar), OR
+   - Type `my plate is XRJ404T in Texas` into the chat input box to
+     simulate the wire-level OCR result without needing the photo.
+2. **You should see:** the lookup misses on `XRJ404T`, and the widget
+   surfaces a candidate for `XRJ4047` (with the swapped `T → 7` rendered
+   in the diff highlight). Other letter↔digit permutations from the
+   generator also appear ranked below.
+
+**Pass:** `T ↔ 7` swap surfaces the correct plate as a candidate. The
+candidate card visually marks the swapped character.
+
+### G.1c — Plate with an E mis-read as an F (letter-vs-letter)
+
+1. Refresh. Either:
+   - Upload a photo where the actual plate has an `E` that the vision
+     model returned as an `F` (e.g. real `EAT4FUN`, OCR returns
+     `FAT4FUN`), OR
+   - Type the OCR-version directly into the chat input box.
+2. **You should see:** the widget surfaces the real plate as a candidate
+   if it resolves through the vendor cascade; the swapped `F → E` is
+   diff-highlighted on the candidate card.
+
+**Pass:** `E ↔ F` swap surfaces the correct plate when it exists in the
+vendor data.
+
+### G.3 — Widget is a no-op when the primary lookup hits
+
+1. Refresh. Type: `my plate is XRJ4041 in Texas`.
+2. **You should see:** the vehicle card renders directly (Stage 2 happy
+   path). The interpretations widget is **not** rendered, because the
+   primary lookup resolved.
+
+**Pass:** Widget only renders on a primary miss; never on a primary hit.
+
+---
+
 ## Issues found (note them here as you go)
 
 For each issue, capture:
