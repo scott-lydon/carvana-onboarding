@@ -19,6 +19,10 @@
  */
 import { useState } from "react";
 import type { JSX, FormEvent } from "react";
+import {
+  PlateInterpretationsWidget,
+  type InterpretationCandidate,
+} from "./PlateInterpretationsWidget.tsx";
 
 type Tab = "plate" | "vin";
 
@@ -39,6 +43,10 @@ type ApiResponseBody =
       kind: "not_found";
       attemptedVendors: readonly string[];
       lastVendorTried: string;
+      /** Plate-side route attaches origin=plate plus the recovery payload. */
+      origin?: "plate" | "vin";
+      originalPlate?: string;
+      interpretations?: readonly InterpretationCandidate[];
     }
   | {
       kind: "transient_error";
@@ -216,7 +224,40 @@ export function EntryForm(): JSX.Element {
         </button>
       </form>
 
-      <DegradationPanel ui={ui} onRetry={(): void => { setUi({ phase: "idle" }); }} />
+      <DegradationPanel
+        ui={ui}
+        plate={plate}
+        state={state}
+        onRetry={(): void => { setUi({ phase: "idle" }); }}
+        onChoosePlate={(chosenPlate, chosenState): void => {
+          // Update the visible form fields so the user sees the
+          // corrected values in the inputs, then immediately re-run
+          // the lookup with the chosen plate. Don't wait for the user
+          // to tap "Get my offer" again — they already chose by
+          // clicking the card.
+          setPlate(chosenPlate);
+          setState(chosenState);
+          setTab("plate");
+          setUi({ phase: "loading" });
+          void (async () => {
+            try {
+              const res = await fetch("/api/lookup/plate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ plate: chosenPlate, state: chosenState }),
+              });
+              const body = (await res.json()) as ApiResponseBody;
+              setUi({ phase: "result", body });
+            } catch (err) {
+              const message =
+                err instanceof Error
+                  ? err.message
+                  : "Unknown network error while re-running the lookup.";
+              setUi({ phase: "network_error", message });
+            }
+          })();
+        }}
+      />
 
       <footer className="entry-footer">
         <a
@@ -255,9 +296,18 @@ export function EntryForm(): JSX.Element {
  */
 function DegradationPanel(props: {
   ui: UiState;
+  /** Current plate input value — used to feed the interpretations widget. */
+  plate: string;
+  /** Current state input value — used to feed the interpretations widget. */
+  state: string;
   onRetry: () => void;
+  /**
+   * User picked a candidate in the PlateInterpretationsWidget OR typed
+   * an override. Parent should re-run the lookup with these values.
+   */
+  onChoosePlate: (plate: string, state: string) => void;
 }): JSX.Element | null {
-  const { ui, onRetry } = props;
+  const { ui, plate, state, onRetry, onChoosePlate } = props;
 
   if (ui.phase === "idle") return null;
   if (ui.phase === "loading") {
@@ -329,28 +379,48 @@ function DegradationPanel(props: {
       );
     }
     case "not_found": {
+      // Plate-side not_found carries the OCR-confusable recovery
+      // payload. We render the PlateInterpretationsWidget inside the
+      // not-found section so the user sees the candidate cards and
+      // typed-override path inline. The vendor-list paragraph stays
+      // (it carries the honest "we checked X, Y" diagnostic), then the
+      // widget takes over. For VIN-side not_found (origin !== "plate"
+      // or interpretations missing), we keep the original advisory copy.
+      const isPlateRecovery =
+        body.origin === "plate" &&
+        body.originalPlate !== undefined &&
+        Array.isArray(body.interpretations);
       return (
         <section className="result result-not-found" aria-live="polite">
           <h2>We couldn&rsquo;t find your plate in our vendor data</h2>
           <p>
             We checked <code>{body.attemptedVendors.join(", ")}</code>. About
             10&ndash;15% of plates don&rsquo;t return a match (commercial,
-            specialty, recently issued). What you can do:
+            specialty, recently issued).
           </p>
-          <ul>
-            <li>Switch to VIN entry (top tab) and try with your 17-character VIN.</li>
-            <li>
-              Snap a photo of your VIN sticker or registration card from the
-              chat surface — the &ldquo;Scan VIN with camera&rdquo; button
-              below the conversation runs the same OCR pipeline.
-            </li>
-            <li>
-              <button type="button" className="link" onClick={onRetry}>
-                Try the plate again
-              </button>{" "}
-              in case of a typo.
-            </li>
-          </ul>
+          {isPlateRecovery ? (
+            <PlateInterpretationsWidget
+              originalPlate={body.originalPlate ?? plate}
+              state={state}
+              interpretations={body.interpretations ?? []}
+              onPlateChosen={onChoosePlate}
+            />
+          ) : (
+            <ul>
+              <li>Switch to VIN entry (top tab) and try with your 17-character VIN.</li>
+              <li>
+                Snap a photo of your VIN sticker or registration card from the
+                chat surface — the &ldquo;Scan VIN with camera&rdquo; button
+                below the conversation runs the same OCR pipeline.
+              </li>
+              <li>
+                <button type="button" className="link" onClick={onRetry}>
+                  Try the plate again
+                </button>{" "}
+                in case of a typo.
+              </li>
+            </ul>
+          )}
         </section>
       );
     }

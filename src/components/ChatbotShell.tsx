@@ -50,6 +50,10 @@ import {
 import { useContractConsent } from "./ContractConsent.tsx";
 import { OfferCard, type OfferResult } from "./OfferCard.tsx";
 import {
+  PlateInterpretationsWidget,
+  type InterpretationCandidate,
+} from "./PlateInterpretationsWidget.tsx";
+import {
   SellWorkspace,
   type SellWorkspaceState,
 } from "./SellWorkspace.tsx";
@@ -620,21 +624,42 @@ export function ChatbotShell(): JSX.Element {
       </div>
 
       <div style={transcriptStyle} aria-live="polite">
-        {turns.map((turn, idx) => (
-          <TurnView
-            key={idx}
-            turn={turn}
-            showDemoPanel={
-              latestVehicle !== null &&
-              turn.kind === "assistant" &&
-              turn.toolCards.some(
-                (c) =>
-                  (c.name === "lookup_plate" || c.name === "lookup_vin") &&
-                  isResolvedLookup(c.result),
-              )
-            }
-          />
-        ))}
+        {turns.map((turn, idx) => {
+          // The widget needs to know which state the user originally
+          // submitted with the plate so a chosen candidate lookup uses
+          // the right state. Walk back through prior turns for the most
+          // recent user message and parse out the state suffix; if the
+          // chat shape doesn't match the recognized patterns we fall
+          // back to empty string and the widget's typed-override path
+          // prompts the user for the state.
+          const priorUserTurn = [...turns]
+            .slice(0, idx)
+            .reverse()
+            .find((t) => t.kind === "user");
+          const userStateGuess = extractStateFromUserText(
+            priorUserTurn?.kind === "user" ? priorUserTurn.text : undefined,
+          );
+          return (
+            <TurnView
+              key={idx}
+              turn={turn}
+              showDemoPanel={
+                latestVehicle !== null &&
+                turn.kind === "assistant" &&
+                turn.toolCards.some(
+                  (c) =>
+                    (c.name === "lookup_plate" || c.name === "lookup_vin") &&
+                    isResolvedLookup(c.result),
+                )
+              }
+              userStateGuess={userStateGuess}
+              onPlateChosen={(plate, stateCode) => {
+                void sendMessage(`my plate is ${plate} in ${stateCode}`);
+              }}
+              onRetakePhoto={ocr.controls.openCamera}
+            />
+          );
+        })}
         {/*
           The four-phase ProgressBar was removed when the chat model
           dropped to Haiku 4.5. The animated typing dots inside the
@@ -787,9 +812,18 @@ export function ChatbotShell(): JSX.Element {
 function TurnView({
   turn,
   showDemoPanel,
+  userStateGuess,
+  onPlateChosen,
+  onRetakePhoto,
 }: {
   turn: UiTurn;
   showDemoPanel: boolean;
+  /** Best-effort two-letter state code parsed from the prior user turn. */
+  userStateGuess: string;
+  /** Plate-interpretations widget callback: user picked a candidate / typed override. */
+  onPlateChosen: (plate: string, stateCode: string) => void;
+  /** Plate-interpretations widget callback: user tapped Retake photo. */
+  onRetakePhoto: () => void;
 }): JSX.Element {
   if (turn.kind === "user") {
     return (
@@ -825,7 +859,13 @@ function TurnView({
         )}
       </div>
       {turn.toolCards.map((card) => (
-        <ToolResultCard key={card.toolUseId} card={card} />
+        <ToolResultCard
+          key={card.toolUseId}
+          card={card}
+          userStateGuess={userStateGuess}
+          onPlateChosen={onPlateChosen}
+          onRetakePhoto={onRetakePhoto}
+        />
       ))}
       {showDemoPanel ? <DemoModePanel /> : null}
     </div>
@@ -891,8 +931,37 @@ function DemoModePanel(): JSX.Element {
   );
 }
 
-function ToolResultCard({ card }: { card: ToolCard }): JSX.Element {
+function ToolResultCard({
+  card,
+  userStateGuess,
+  onPlateChosen,
+  onRetakePhoto,
+}: {
+  card: ToolCard;
+  userStateGuess: string;
+  onPlateChosen: (plate: string, stateCode: string) => void;
+  onRetakePhoto: () => void;
+}): JSX.Element {
   const result = card.result;
+  // OCR-confusable recovery widget. Renders inline whenever the plate
+  // lookup misses AND the server attached the `interpretations` field
+  // (always present on plate-side not_found after slice G). The widget
+  // surfaces ranked candidate cards plus retake/retype affordances even
+  // when zero permutations resolved.
+  if (
+    card.name === "lookup_plate" &&
+    isPlateNotFoundWithInterpretations(result)
+  ) {
+    return (
+      <PlateInterpretationsWidget
+        originalPlate={result.originalPlate}
+        state={userStateGuess}
+        interpretations={result.interpretations}
+        onPlateChosen={onPlateChosen}
+        onRetakePhoto={onRetakePhoto}
+      />
+    );
+  }
   if (
     (card.name === "lookup_plate" || card.name === "lookup_vin") &&
     isResolvedLookup(result)
@@ -1065,6 +1134,71 @@ function hasAnyWorkspaceData(state: SellWorkspaceState): boolean {
     state.paymentMethod !== null ||
     state.contract !== null
   );
+}
+
+/**
+ * Shape the server attaches to a plate-lookup not_found response after
+ * running confusable-permutation recovery. The widget rendering trigger
+ * is the PRESENCE of `interpretations` (not its length) — the server
+ * always emits the field on plate-side not_found, including when zero
+ * permutations resolved, so the widget can surface the retake/retype
+ * affordances even with no candidates.
+ */
+interface PlateNotFoundWithInterpretations {
+  readonly kind: "not_found";
+  readonly origin: "plate";
+  readonly originalPlate: string;
+  readonly interpretations: readonly InterpretationCandidate[];
+}
+
+/**
+ * Type guard for the plate-side not_found shape. Validates every field
+ * the widget touches so a server-side rename surfaces here as a missing
+ * widget (the result falls through to the generic raw-payload card)
+ * rather than a runtime crash inside the widget.
+ *
+ * We DELIBERATELY do not deep-validate every candidate field; the
+ * widget tolerates partially-missing vehicle fields by rendering what
+ * it has and a malformed candidate just renders a less-informative
+ * card. Stricter validation here would mean the widget vanishes on a
+ * single bad candidate, which is worse UX.
+ */
+function isPlateNotFoundWithInterpretations(
+  value: unknown,
+): value is PlateNotFoundWithInterpretations {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    obj.kind === "not_found" &&
+    obj.origin === "plate" &&
+    typeof obj.originalPlate === "string" &&
+    Array.isArray(obj.interpretations)
+  );
+}
+
+/**
+ * Parse the state code out of the original user-message text that
+ * triggered the lookup. The chat orchestrator always sends one of two
+ * shapes:
+ *   - "Scanned plate: <plate> in <state>"
+ *   - "my plate is <plate> in <state>"
+ * Both put the state after the literal " in ". When we can't recognize
+ * the shape (e.g. the user phrased it differently), we fall back to the
+ * empty string and let the widget's typed-override path prompt the user
+ * for the state explicitly.
+ */
+function extractStateFromUserText(text: string | undefined): string {
+  if (text === undefined) return "";
+  const match = /\bin\s+([A-Za-z]{2,})\b/.exec(text);
+  if (match === null) return "";
+  const candidate = match[1] ?? "";
+  // The chat path sends full state names sometimes ("in Texas"); the
+  // widget normalizes to the two-letter postal code via lookup. To keep
+  // this helper standalone (no state-name table here), we surface the
+  // first two letters uppercased; the widget validates length=2 before
+  // submitting, so a wrong fallback turns into a visible validation
+  // error rather than a silent bad lookup.
+  return candidate.slice(0, 2).toUpperCase();
 }
 
 function isResolvedLookup(value: unknown): value is ResolvedLookupView {
