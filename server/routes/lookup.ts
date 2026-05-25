@@ -32,6 +32,49 @@
 import type { Request, Response } from "express";
 import { Plate, parseStateCode, tryParseVinWithPermutation } from "../../src/lookup/types.js";
 import type { VendorCascade } from "../../src/lookup/VendorCascade.js";
+import {
+  generateConfusablePermutations,
+  type PlatePermutation,
+} from "../../src/lookup/confusables.js";
+
+/**
+ * One interpretation we surface in the not-found response when the
+ * primary plate lookup misses. The widget on the client renders these
+ * as a ranked list of "did you mean" candidate cards, with the swapped
+ * characters diff-highlighted from the original.
+ *
+ * `kind` is always `"resolved_alternative"` so the client can ignore
+ * stray entries without a vehicle. Future variants (e.g. fuzzy DB
+ * matches that did NOT resolve in the vendor cascade but might still be
+ * worth offering as a typed-correction hint) will land here as new
+ * discriminator values.
+ */
+interface InterpretationCandidate {
+  readonly kind: "resolved_alternative";
+  readonly plate: string;
+  readonly vehicle: unknown;
+  readonly viaVendor: string;
+  readonly editCount: number;
+  readonly swaps: PlatePermutation["swaps"];
+}
+
+/**
+ * Bounds the worst-case vendor cost when a plate has many confusable
+ * positions. Even with MAX_PERMUTATIONS = 24 candidate plates, we cap
+ * the parallel fan-out at 8 in flight at a time so a slow vendor does
+ * not block 23 other requests behind it. The number is also low enough
+ * that the cascade-side rate limits (CarsXE: 60/min on sandbox tier)
+ * do not get hit by a single miss-recovery.
+ */
+const PERMUTATION_PARALLELISM = 8;
+
+/**
+ * Limit on number of resolved alternatives we'll attach to the response.
+ * The widget renders up to 6 candidate cards; emitting more is wasted
+ * vendor cost and wasted bytes on the wire. 6 chosen to match the
+ * client's render cap so the contract is symmetric.
+ */
+const MAX_INTERPRETATIONS = 6;
 
 /**
  * Map a thrown Plate-constructor message to user-facing prose. The
@@ -80,6 +123,103 @@ function friendlyStateReason(technical: string): string {
     return "Pick a US state from the field next to the plate.";
   }
   return "We need a US state code (two letters) to look up the plate.";
+}
+
+/**
+ * Walk the OCR-confusable permutations of `originalPlate` and probe each
+ * one through the vendor cascade. Returns the resolved alternatives in
+ * the same rank order the permuter emitted.
+ *
+ * Bounded concurrency: at most PERMUTATION_PARALLELISM probes in flight
+ * at a time, so a slow vendor does not stall the whole fan-out.
+ *
+ * Soft-cap on resolved hits at MAX_INTERPRETATIONS: as soon as we have
+ * that many, we stop firing new probes. In-flight probes still resolve
+ * but their results are not added. The fan-out is best-effort; vendor
+ * errors on individual permutations are logged and swallowed so one
+ * vendor hiccup does not prevent surfacing the OTHER candidates.
+ *
+ * Returns the empty list when no permutations resolved — the route still
+ * emits the not_found response (the widget always renders when
+ * `interpretations` is present in the response, even if empty, so the
+ * client can show "no close matches" alongside the retake/retype
+ * affordances).
+ */
+async function probePermutations(
+  cascade: VendorCascade,
+  originalPlate: Plate,
+  state: ReturnType<typeof parseStateCode>,
+): Promise<readonly InterpretationCandidate[]> {
+  const permutations = generateConfusablePermutations(originalPlate.normalized);
+  if (permutations.length === 0) return [];
+
+  const resolved: InterpretationCandidate[] = [];
+  let index = 0;
+  let stop = false;
+
+  async function worker(): Promise<void> {
+    while (!stop) {
+      const i = index++;
+      if (i >= permutations.length) return;
+      const perm = permutations[i];
+      if (perm === undefined) return;
+      let alternatePlate: Plate;
+      try {
+        alternatePlate = new Plate(perm.plate);
+      } catch (err) {
+        // A permutation that violates the Plate constructor's length /
+        // alphabet rules cannot be looked up. Log so the operator can
+        // tune the confusable set if a particular permutation always
+        // bounces, then skip.
+        console.warn(
+          `[probePermutations] permutation ${perm.plate} rejected by Plate constructor:`,
+          err instanceof Error ? err.message : err,
+        );
+        continue;
+      }
+      try {
+        const result = await cascade.lookupByPlate(alternatePlate, state);
+        if (result.kind === "resolved") {
+          resolved.push({
+            kind: "resolved_alternative",
+            plate: perm.plate,
+            vehicle: result.vehicle,
+            viaVendor: result.viaVendor,
+            editCount: perm.editCount,
+            swaps: perm.swaps,
+          });
+          if (resolved.length >= MAX_INTERPRETATIONS) {
+            stop = true;
+            return;
+          }
+        }
+        // Non-resolved permutation results (not_found, transient_error,
+        // bot_detected, format_error) are expected and silently ignored.
+        // We only care about hits during recovery; the original lookup's
+        // failure mode is what the user-facing response already carries.
+      } catch (err) {
+        console.warn(
+          `[probePermutations] cascade threw on permutation ${perm.plate}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  }
+
+  const workerCount = Math.min(PERMUTATION_PARALLELISM, permutations.length);
+  const workers = Array.from({ length: workerCount }, () => worker());
+  await Promise.all(workers);
+
+  // Preserve the permuter's rank order. Workers race so insertion order
+  // in `resolved` is non-deterministic; sort back to the input order
+  // (lower index in permutations[] = higher rank).
+  const permIndexByPlate = new Map<string, number>();
+  permutations.forEach((p, i) => permIndexByPlate.set(p.plate, i));
+  return resolved.sort(
+    (l, r) =>
+      (permIndexByPlate.get(l.plate) ?? Number.MAX_SAFE_INTEGER) -
+      (permIndexByPlate.get(r.plate) ?? Number.MAX_SAFE_INTEGER),
+  );
 }
 
 export function makePlateLookupHandler(cascade: VendorCascade | undefined) {
@@ -176,9 +316,39 @@ export function makePlateLookupHandler(cascade: VendorCascade | undefined) {
       case "resolved":
         res.status(200).json(result);
         return;
-      case "not_found":
-        res.status(404).json({ ...result, origin: "plate" });
+      case "not_found": {
+        // OCR-confusable recovery. Fan out the permutations of the
+        // normalized plate through the cascade and attach any hits as
+        // `interpretations` so the client renders the
+        // PlateInterpretationsWidget with "did you mean" cards.
+        //
+        // The widget renders even when zero permutations resolved (to
+        // surface retake/retype affordances), so we always include the
+        // `interpretations` field on a plate not_found — empty array
+        // when nothing came back. The presence of the field is the
+        // client-side trigger; its emptiness is a UX, not an error.
+        //
+        // We swallow probePermutations throws entirely: a failure of
+        // the recovery layer must not block the primary not_found
+        // response. The original miss is the user-actionable fact.
+        let interpretations: readonly InterpretationCandidate[] = [];
+        try {
+          interpretations = await probePermutations(cascade, plate, state);
+        } catch (err) {
+          console.error(
+            "[lookup/plate] probePermutations threw — recovery layer failed; " +
+              "original not_found will still surface without alternatives:",
+            err,
+          );
+        }
+        res.status(404).json({
+          ...result,
+          origin: "plate",
+          originalPlate: plate.normalized,
+          interpretations,
+        });
         return;
+      }
       case "transient_error":
         res.status(503).json(result);
         return;
