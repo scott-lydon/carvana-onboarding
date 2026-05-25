@@ -180,6 +180,18 @@ async function probePermutations(
       try {
         const result = await cascade.lookupByPlate(alternatePlate, state);
         if (result.kind === "resolved") {
+          // Re-check the cap BEFORE pushing. Without this guard,
+          // PARALLELISM-1 workers in flight at the moment `stop` flips
+          // would each still push their resolved candidate, taking the
+          // final length up to MAX_INTERPRETATIONS + (PARALLELISM - 1).
+          // Harmless downstream (the widget slices to 6) but a contract
+          // violation of the "soft cap at MAX_INTERPRETATIONS" promise
+          // documented above. Caught in the qa-adversary pass on
+          // commit 214fc16.
+          if (resolved.length >= MAX_INTERPRETATIONS) {
+            stop = true;
+            return;
+          }
           resolved.push({
             kind: "resolved_alternative",
             plate: perm.plate,
