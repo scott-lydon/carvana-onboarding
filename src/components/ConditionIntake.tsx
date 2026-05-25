@@ -29,7 +29,19 @@
  *     blank type or an unsupported one.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, JSX, MutableRefObject } from "react";
+import type {
+  ChangeEvent,
+  DragEvent as ReactDragEvent,
+  JSX,
+  MutableRefObject,
+} from "react";
+import {
+  compressImageIfNeeded,
+  EncodeError,
+  ImageDecodeError,
+  StillTooLargeError,
+} from "./imageCompression.ts";
+import { getConditionTileExample } from "./ConditionTileExamples.tsx";
 
 /**
  * Re-exported here so callers can `import type { ConditionExtractionResult }
@@ -156,6 +168,12 @@ export function useConditionIntake(
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [slots, setSlots] = useState<Slots>({});
   const [status, setStatus] = useState<ServerStatus>({ kind: "idle" });
+  // Which tile, if any, is currently showing its example illustration.
+  // Single value (not a set) so only one example is open at a time;
+  // mobile layouts get cluttered if every tile's panel stacks.
+  const [exampleAngle, setExampleAngle] = useState<ConditionAngle | null>(
+    null,
+  );
   // One hidden input PER angle so each tap goes to the right slot without
   // a separate "which slot did you tap?" state machine.
   const inputRefs = useRef<
@@ -190,42 +208,91 @@ export function useConditionIntake(
     setIsOpen(false);
   }, []);
 
+  /**
+   * Shared "the user picked / dropped a file for this slot" path.
+   * Runs:
+   *   1. Sanity checks (zero bytes, unsupported MIME).
+   *   2. Browser-side compression so an oversized iPhone JPEG never
+   *      hits Anthropic's 5 MB cap (root cause of the cryptic "image
+   *      exceeds 5 MB maximum" 400 error we used to surface).
+   *   3. Slot replacement + cleanup of any prior preview URL.
+   *
+   * Returns true on success so the caller (tap-to-pick OR drag-drop)
+   * can clear its own visual state.
+   */
+  const acceptFileForAngle = useCallback(
+    async (angle: ConditionAngle, rawFile: File): Promise<boolean> => {
+      if (rawFile.size === 0) {
+        setStatus({
+          kind: "error",
+          message: `${ANGLE_LABEL[angle]} photo is 0 bytes (${rawFile.name || "unnamed"}). Pick a different photo for that slot.`,
+        });
+        return false;
+      }
+      const mediaType = rawFile.type;
+      if (mediaType === "" || !ACCEPTED_MIME.includes(mediaType)) {
+        setStatus({
+          kind: "error",
+          message: `${ANGLE_LABEL[angle]} photo has unsupported type "${mediaType || "(blank)"}". Re-take or pick a JPEG, PNG, HEIC, or WebP.`,
+        });
+        return false;
+      }
+      let file = rawFile;
+      try {
+        file = await compressImageIfNeeded(rawFile);
+      } catch (err) {
+        if (
+          err instanceof StillTooLargeError ||
+          err instanceof ImageDecodeError ||
+          err instanceof EncodeError
+        ) {
+          setStatus({
+            kind: "error",
+            message: `${ANGLE_LABEL[angle]} photo: ${err.message}`,
+          });
+          return false;
+        }
+        // Unknown compression failure — fall back to the original file
+        // rather than blocking the upload. The server has its own
+        // resample stage as defense in depth.
+        console.warn(
+          `[ConditionIntake] compressImageIfNeeded threw an unexpected error for angle ${angle}; falling back to original file. Error:`,
+          err,
+        );
+      }
+      const previewUrl = URL.createObjectURL(file);
+      setSlots((prev) => {
+        const existing = prev[angle];
+        if (existing !== undefined) URL.revokeObjectURL(existing.previewUrl);
+        return {
+          ...prev,
+          [angle]: { file, previewUrl, mediaType: file.type || mediaType },
+        };
+      });
+      setStatus((prev) => (prev.kind === "error" ? { kind: "idle" } : prev));
+      return true;
+    },
+    [],
+  );
+
   const handleFilePicked = useCallback(
     (angle: ConditionAngle) =>
       (event: ChangeEvent<HTMLInputElement>): void => {
         const file = event.target.files?.[0];
-        if (file === undefined) return;
-        if (file.size === 0) {
-          setStatus({
-            kind: "error",
-            message: `${ANGLE_LABEL[angle]} photo is 0 bytes (${file.name || "unnamed"}). Pick a different photo for that slot.`,
-          });
-          // Reset the input so the same file can be re-picked after the
-          // user takes a different photo with the same camera app.
-          event.target.value = "";
-          return;
-        }
-        const mediaType = file.type;
-        if (mediaType === "" || !ACCEPTED_MIME.includes(mediaType)) {
-          setStatus({
-            kind: "error",
-            message: `${ANGLE_LABEL[angle]} photo has unsupported type "${mediaType || "(blank)"}". Re-take or pick a JPEG, PNG, HEIC, or WebP.`,
-          });
-          event.target.value = "";
-          return;
-        }
-        const previewUrl = URL.createObjectURL(file);
-        setSlots((prev) => {
-          // Replace any existing slot at this angle (revoke its preview).
-          const existing = prev[angle];
-          if (existing !== undefined) URL.revokeObjectURL(existing.previewUrl);
-          return { ...prev, [angle]: { file, previewUrl, mediaType } };
-        });
-        // Clear any prior error once the user makes progress.
-        setStatus((prev) => (prev.kind === "error" ? { kind: "idle" } : prev));
+        // Always clear the input value so re-picking the same file
+        // re-triggers the change event.
         event.target.value = "";
+        if (file === undefined) return;
+        void acceptFileForAngle(angle, file);
       },
-    [],
+    [acceptFileForAngle],
+  );
+
+  const handleFileDropped = useCallback(
+    (angle: ConditionAngle, file: File): void => {
+      void acceptFileForAngle(angle, file);
+    },
+    [acceptFileForAngle],
   );
 
   const handleClearSlot = useCallback((angle: ConditionAngle): void => {
@@ -339,10 +406,22 @@ export function useConditionIntake(
           </button>
         </div>
         <div style={panelSubStyle}>
-          Tap any tile to add a photo. {String(MIN_FILLED)} or more unlocks
-          the assessment ({String(filled.length)} so far). The four exterior
-          corners + the odometer are the most useful.
+          Tap a tile to add a photo, or drag a photo straight onto it.
+          {" "}
+          {String(MIN_FILLED)} or more unlocks the assessment
+          {" "}({String(filled.length)} so far). The four exterior corners
+          plus the odometer are the most useful. Tap the
+          {" "}<span aria-hidden="true">ⓘ</span> on any tile to see what
+          the photo should look like.
         </div>
+        {exampleAngle !== null ? (
+          <ExamplePanel
+            angle={exampleAngle}
+            onClose={() => {
+              setExampleAngle(null);
+            }}
+          />
+        ) : null}
         <div style={slotGridStyle}>
           {ANGLE_ORDER.map((angle) => {
             const slot = slots[angle];
@@ -354,7 +433,12 @@ export function useConditionIntake(
                 disabled={status.kind === "submitting"}
                 inputRefs={inputRefs}
                 onFilePicked={handleFilePicked}
+                onFileDropped={handleFileDropped}
                 onClear={handleClearSlot}
+                isExampleOpen={exampleAngle === angle}
+                onToggleExample={() => {
+                  setExampleAngle((prev) => (prev === angle ? null : angle));
+                }}
               />
             );
           })}
@@ -395,8 +479,10 @@ export function useConditionIntake(
   }, [
     canSubmit,
     close,
+    exampleAngle,
     filled.length,
     handleClearSlot,
+    handleFileDropped,
     handleFilePicked,
     handleSubmit,
     isOpen,
@@ -414,6 +500,15 @@ export function useConditionIntake(
  * One slot in the grid. Renders either an "add photo" tile or the
  * already-picked thumbnail with a clear button. The hidden file input
  * is owned per-slot so the OS picker remembers nothing between angles.
+ *
+ * Drag-and-drop: the wrapper div is a drop target. Dropping an image
+ * file on the tile fills THIS slot and stops the event from bubbling
+ * up to the chat root (which would otherwise route it to the VIN OCR
+ * pipeline). Non-image drops surface a specific error rather than
+ * silently disappearing.
+ *
+ * ⓘ button: opens the per-angle example illustration above the grid.
+ * Single example open at a time so mobile layouts stay legible.
  */
 function SlotTile(props: {
   angle: ConditionAngle;
@@ -423,26 +518,114 @@ function SlotTile(props: {
   onFilePicked: (
     angle: ConditionAngle,
   ) => (event: ChangeEvent<HTMLInputElement>) => void;
+  onFileDropped: (angle: ConditionAngle, file: File) => void;
   onClear: (angle: ConditionAngle) => void;
+  isExampleOpen: boolean;
+  onToggleExample: () => void;
 }): JSX.Element {
-  const { angle, slot, disabled, inputRefs, onFilePicked, onClear } = props;
+  const {
+    angle,
+    slot,
+    disabled,
+    inputRefs,
+    onFilePicked,
+    onFileDropped,
+    onClear,
+    isExampleOpen,
+    onToggleExample,
+  } = props;
   const label = ANGLE_LABEL[angle];
   const icon = ANGLE_ICON[angle];
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const dragDepthRef = useRef<number>(0);
+
   const handleTileClick = (): void => {
     if (disabled) return;
     inputRefs.current[angle]?.click();
   };
+
+  const containsImageFile = (event: ReactDragEvent<HTMLDivElement>): boolean => {
+    const items = event.dataTransfer.items;
+    if (items.length === 0) {
+      // Some browsers/touch devices populate `files` but not `items`
+      // during dragover. Treat that as "probably an image" and let the
+      // drop handler do the real check.
+      return event.dataTransfer.files.length > 0;
+    }
+    const itemsArr = Array.from(items);
+    return itemsArr.some(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    );
+  };
+
+  const handleDragEnter = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (disabled) return;
+    if (!containsImageFile(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (disabled) return;
+    if (!containsImageFile(event)) return;
+    // Both preventDefault AND stopPropagation are required:
+    //   - preventDefault keeps the browser from opening the dropped file
+    //     in a new tab AND lets the drop event fire.
+    //   - stopPropagation keeps the chat-root drop handler (which would
+    //     route the drop into the VIN OCR pipeline) from also reacting.
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: ReactDragEvent<HTMLDivElement>): void => {
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  };
+
+  const handleDrop = (event: ReactDragEvent<HTMLDivElement>): void => {
+    if (disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+    const file = event.dataTransfer.files[0];
+    if (file === undefined) return;
+    onFileDropped(angle, file);
+  };
+
+  const wrapperStyle: React.CSSProperties = isDragOver
+    ? { ...slotWrapStyle, ...dragOverWrapStyle }
+    : slotWrapStyle;
+  const baseTileStyle = slot === undefined ? emptyTileStyle : filledTileStyle;
+  const tileStyle: React.CSSProperties = isDragOver
+    ? { ...baseTileStyle, ...dragOverTileStyle }
+    : baseTileStyle;
+  const infoButtonStyleResolved = isExampleOpen
+    ? infoButtonActiveStyle
+    : infoButtonStyle;
+
   return (
-    <div style={slotWrapStyle}>
+    <div
+      style={wrapperStyle}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      data-testid={`condition-tile-${angle}`}
+    >
       <button
         type="button"
         onClick={handleTileClick}
         disabled={disabled}
-        style={slot === undefined ? emptyTileStyle : filledTileStyle}
+        style={tileStyle}
         aria-label={
           slot === undefined
-            ? `Add ${label} photo`
-            : `Replace ${label} photo`
+            ? `Add ${label} photo (tap or drag a photo here)`
+            : `Replace ${label} photo (tap or drag a photo here)`
         }
       >
         {slot === undefined ? (
@@ -451,7 +634,9 @@ function SlotTile(props: {
               {icon}
             </span>
             <span style={tileLabelStyle}>{label}</span>
-            <span style={tileHintStyle}>tap to add</span>
+            <span style={tileHintStyle}>
+              {isDragOver ? "drop to add" : "tap or drop"}
+            </span>
           </>
         ) : (
           <>
@@ -464,10 +649,34 @@ function SlotTile(props: {
           </>
         )}
       </button>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleExample();
+        }}
+        disabled={disabled}
+        style={infoButtonStyleResolved}
+        aria-label={
+          isExampleOpen
+            ? `Hide ${label} example`
+            : `Show example of a good ${label} photo`
+        }
+        aria-pressed={isExampleOpen}
+        title={
+          isExampleOpen
+            ? `Hide ${label} example`
+            : `Show example of a good ${label} photo`
+        }
+        data-testid={`condition-info-${angle}`}
+      >
+        {"ⓘ"}
+      </button>
       {slot !== undefined ? (
         <button
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             onClear(angle);
           }}
           disabled={disabled}
@@ -489,6 +698,59 @@ function SlotTile(props: {
         style={{ display: "none" }}
         data-testid={`condition-input-${angle}`}
       />
+    </div>
+  );
+}
+
+/**
+ * The "what should this photo look like?" panel that appears above
+ * the slot grid when a user taps a tile's ⓘ button. Shows the angle's
+ * inline SVG illustration plus the must-contain / avoid checklists from
+ * ConditionTileExamples.
+ */
+function ExamplePanel(props: {
+  angle: ConditionAngle;
+  onClose: () => void;
+}): JSX.Element {
+  const { angle, onClose } = props;
+  const example = getConditionTileExample(angle);
+  return (
+    <div style={examplePanelStyle} role="region" aria-label={`${ANGLE_LABEL[angle]} example`}>
+      <div style={examplePanelHeaderStyle}>
+        <strong style={{ fontSize: 13 }}>
+          {ANGLE_LABEL[angle]} — example
+        </strong>
+        <button
+          type="button"
+          onClick={onClose}
+          style={examplePanelCloseStyle}
+          aria-label={`Close ${ANGLE_LABEL[angle]} example`}
+        >
+          close
+        </button>
+      </div>
+      <div style={exampleIllustrationStyle}>{example.illustration}</div>
+      <p style={exampleHeadlineStyle}>{example.headline}</p>
+      <div style={exampleColumnsStyle}>
+        <div style={exampleColumnStyle}>
+          <div style={exampleColumnHeaderStyle}>Must contain</div>
+          <ul style={exampleListStyle}>
+            {example.mustContain.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div style={exampleColumnStyle}>
+          <div style={{ ...exampleColumnHeaderStyle, color: "#7f1d1d" }}>
+            Avoid
+          </div>
+          <ul style={exampleListStyle}>
+            {example.avoid.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }
@@ -675,4 +937,96 @@ const disabledButtonStyle: React.CSSProperties = {
   borderRadius: 8,
   fontSize: 14,
   cursor: "not-allowed",
+};
+const dragOverWrapStyle: React.CSSProperties = {
+  // The wrap doesn't need much; the inner tile owns the highlight.
+};
+const dragOverTileStyle: React.CSSProperties = {
+  borderColor: "#2563eb",
+  background: "#eff6ff",
+  borderStyle: "solid",
+  borderWidth: 2,
+};
+const infoButtonStyle: React.CSSProperties = {
+  position: "absolute",
+  top: 4,
+  left: 4,
+  width: 22,
+  height: 22,
+  borderRadius: 11,
+  border: "none",
+  background: "rgba(15,23,42,0.65)",
+  color: "#ffffff",
+  fontSize: 13,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  lineHeight: 1,
+  fontWeight: 700,
+};
+const infoButtonActiveStyle: React.CSSProperties = {
+  ...infoButtonStyle,
+  background: "#2563eb",
+  color: "#ffffff",
+};
+const examplePanelStyle: React.CSSProperties = {
+  background: "#f8fafc",
+  border: "1px solid #cbd5e1",
+  borderRadius: 10,
+  padding: 12,
+  marginBottom: 12,
+};
+const examplePanelHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 8,
+};
+const examplePanelCloseStyle: React.CSSProperties = {
+  background: "transparent",
+  color: "#475569",
+  border: "none",
+  cursor: "pointer",
+  fontSize: 12,
+};
+const exampleIllustrationStyle: React.CSSProperties = {
+  background: "#ffffff",
+  border: "1px solid #e2e8f0",
+  borderRadius: 8,
+  padding: 4,
+  marginBottom: 8,
+};
+const exampleHeadlineStyle: React.CSSProperties = {
+  fontSize: 13,
+  color: "#0f2747",
+  margin: "0 0 8px 0",
+  lineHeight: 1.4,
+};
+const exampleColumnsStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+  gap: 10,
+};
+const exampleColumnStyle: React.CSSProperties = {
+  background: "#ffffff",
+  border: "1px solid #e2e8f0",
+  borderRadius: 6,
+  padding: "6px 8px",
+};
+const exampleColumnHeaderStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  color: "#1d4ed8",
+  marginBottom: 4,
+  textTransform: "uppercase",
+  letterSpacing: 0.4,
+};
+const exampleListStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: "#0f172a",
+  paddingLeft: 16,
+  margin: 0,
+  lineHeight: 1.4,
 };

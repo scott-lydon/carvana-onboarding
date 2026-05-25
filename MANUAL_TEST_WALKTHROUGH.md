@@ -226,6 +226,57 @@
 
 ---
 
+## Side flow F — ConditionIntake tile drag-and-drop (added 2026-05-24)
+
+Reproduces the bug reported on 2026-05-24: dragging a 5.9 MB iPhone photo onto a "Front left" tile silently sent it to the VIN OCR pipeline and got rejected by Anthropic's 5 MB cap. The fix is per-tile drop targets plus browser-side compression.
+
+1. Complete Stage 2 (vehicle lookup) so the chatbot is in the post-VIN flow.
+2. Type `start condition intake` and send so the chatbot calls `start_condition_intake` and the **Photo your car for an instant assessment** panel opens.
+3. From Finder/Files, drag any image file (JPEG or PNG, any size) and **drop it directly on the "Front left" tile** in the photo grid.
+4. **You should see:** the tile border turns solid blue while you hover. On drop, the tile's hint text briefly reads "drop to add", then the tile fills with a thumbnail of the dropped photo. No red error appears. No VIN-OCR error appears. The "Upload a photo" / "Scan VIN with camera" buttons up top do NOT spin (they're for the VIN-OCR path, which should not have been triggered).
+5. Repeat steps 3 to 4 for two more tiles (e.g., **Front right** and **Odometer**) using DIFFERENT photos.
+6. **You should see:** each tile shows its own thumbnail. The "Get instant assessment" button becomes enabled. The "(X so far)" counter in the sub-text updates to 3.
+
+**Pass:** Drops land on the tile they were dropped onto, never on the VIN-OCR pipeline. Thumbnails preview correctly. Counter increments.
+
+### F.1 — Oversized iPhone JPEG should auto-compress, not 5 MB-reject
+
+1. With the ConditionIntake panel open, drag an iPhone JPEG larger than 5 MB onto any tile (e.g., a fresh photo straight off a recent iPhone — most are 4 to 8 MB).
+2. **You should see:** the tile fills with a thumbnail within a second or two (no spinner because compression is in-memory). No red error appears.
+3. Click **Get instant assessment** with at least 3 tiles filled.
+4. **You should see:** the assessment runs without the "Server validation failed: The vision model rejected this image (Error: 400... image exceeds 5 MB maximum)" message that appeared before the fix. A tier (Excellent / Good / Fair / Rough) is returned and the chat continues.
+
+**Pass:** Large photos upload and analyze successfully. No 5 MB rejection.
+
+### F.2 — Per-tile example illustrations
+
+1. With the panel open, tap the small **ⓘ** badge in the upper-left corner of the "Front left" tile.
+2. **You should see:** above the grid, an example panel opens showing: a stylized SVG of a car with the front-left corner framed by a dashed blue box and a "you" camera marker; a one-sentence headline telling you where to stand; two columns titled "Must contain" and "Avoid" with bulleted checklists.
+3. Tap the **ⓘ** on a different tile (e.g., **Odometer**).
+4. **You should see:** the example panel switches to the odometer illustration (steering-wheel arc plus a highlighted digit cluster) — only one example is open at a time.
+5. Tap the **ⓘ** on the same tile again, OR click **close** in the example panel header.
+6. **You should see:** the example panel disappears.
+
+**Pass:** ⓘ button on every tile opens its matching illustration; only one example open at a time; close + re-tap dismiss correctly.
+
+### F.3 — Drop a non-image file onto a tile
+
+1. With the panel open, drag a `.txt` or `.pdf` file onto any tile.
+2. **You should see:** the tile does NOT highlight blue (the drop-over only activates for image files). On drop, nothing happens — the file is silently rejected because the tile's `onDragOver` doesn't run, so no `dropEffect = "copy"` is set and no drop fires.
+
+**Pass:** Non-image drops do not fill the tile and do not fall through to VIN-OCR.
+
+### F.4 — Drop on empty chat area still routes to VIN-OCR (regression check)
+
+This verifies the per-tile fix did not break the existing "drop a VIN photo anywhere in the chat" feature.
+
+1. With or without the ConditionIntake panel open, drag an image of a VIN sticker onto the empty area of the chat (above the composer, NOT on any tile).
+2. **You should see:** the VIN-OCR pipeline kicks in — the "Scan VIN with camera" CTA goes into the uploading state, the progress phases run ("Compressing photo" then "Uploading" then "Extracting text" then "Validating VIN"), and either the VIN gets sent as a chat message or a specific error appears.
+
+**Pass:** Drops on empty chat area still go to VIN-OCR; only drops on tiles divert.
+
+---
+
 ## Issues found (note them here as you go)
 
 For each issue, capture:
