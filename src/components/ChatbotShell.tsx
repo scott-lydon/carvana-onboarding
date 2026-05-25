@@ -53,6 +53,7 @@ import {
   PlateInterpretationsWidget,
   type InterpretationCandidate,
 } from "./PlateInterpretationsWidget.tsx";
+import { toStateCodeOrEmpty } from "../lookup/types.ts";
 import {
   SellWorkspace,
   type SellWorkspaceState,
@@ -1152,28 +1153,72 @@ interface PlateNotFoundWithInterpretations {
 }
 
 /**
+ * Type guard for one InterpretationCandidate. Validates EVERY field
+ * the widget touches at render time so a server-side regression that
+ * emits a malformed candidate (e.g. `vehicle: null`, or a bare string
+ * instead of the candidate object) cannot crash CandidateCard's
+ * `v.year`/`v.make`/`v.model` access.
+ *
+ * Exported so the adversary tests at tests/adversary/* can import it
+ * and assert directly against the real implementation rather than an
+ * inlined copy. The "swaps" array is required and non-empty per the
+ * server contract — a candidate with zero swaps would be identical to
+ * the original plate, which the permuter never emits.
+ */
+export function isValidInterpretationCandidate(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  if (obj.kind !== "resolved_alternative") return false;
+  if (typeof obj.plate !== "string" || obj.plate.length === 0) return false;
+  if (typeof obj.viaVendor !== "string") return false;
+  if (typeof obj.editCount !== "number" || !Number.isFinite(obj.editCount)) {
+    return false;
+  }
+  const vehicle = obj.vehicle;
+  if (typeof vehicle !== "object" || vehicle === null) return false;
+  const v = vehicle as Record<string, unknown>;
+  if (typeof v.year !== "number" || !Number.isFinite(v.year)) return false;
+  if (typeof v.make !== "string") return false;
+  if (typeof v.model !== "string") return false;
+  if (!Array.isArray(obj.swaps) || obj.swaps.length === 0) return false;
+  for (const swap of obj.swaps) {
+    if (typeof swap !== "object" || swap === null) return false;
+    const s = swap as Record<string, unknown>;
+    if (typeof s.index !== "number" || !Number.isFinite(s.index)) return false;
+    if (typeof s.fromChar !== "string" || s.fromChar.length === 0) return false;
+    if (typeof s.toChar !== "string" || s.toChar.length === 0) return false;
+  }
+  return true;
+}
+
+/**
  * Type guard for the plate-side not_found shape. Validates every field
  * the widget touches so a server-side rename surfaces here as a missing
  * widget (the result falls through to the generic raw-payload card)
  * rather than a runtime crash inside the widget.
  *
- * We DELIBERATELY do not deep-validate every candidate field; the
- * widget tolerates partially-missing vehicle fields by rendering what
- * it has and a malformed candidate just renders a less-informative
- * card. Stricter validation here would mean the widget vanishes on a
- * single bad candidate, which is worse UX.
+ * Now performs DEEP validation of each candidate via
+ * {@link isValidInterpretationCandidate}: a payload with any malformed
+ * candidate (null vehicle, missing fields, array of strings, etc.) is
+ * rejected as a whole. The fall-through path is the generic raw-
+ * payload card, which is a safer failure mode than crashing the widget.
+ *
+ * Exported so the adversary tests can import it and assert against the
+ * real implementation.
  */
-function isPlateNotFoundWithInterpretations(
+export function isPlateNotFoundWithInterpretations(
   value: unknown,
 ): value is PlateNotFoundWithInterpretations {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return (
-    obj.kind === "not_found" &&
-    obj.origin === "plate" &&
-    typeof obj.originalPlate === "string" &&
-    Array.isArray(obj.interpretations)
-  );
+  if (obj.kind !== "not_found") return false;
+  if (obj.origin !== "plate") return false;
+  if (typeof obj.originalPlate !== "string") return false;
+  if (!Array.isArray(obj.interpretations)) return false;
+  for (const candidate of obj.interpretations) {
+    if (!isValidInterpretationCandidate(candidate)) return false;
+  }
+  return true;
 }
 
 /**
@@ -1187,18 +1232,34 @@ function isPlateNotFoundWithInterpretations(
  * empty string and let the widget's typed-override path prompt the user
  * for the state explicitly.
  */
-function extractStateFromUserText(text: string | undefined): string {
+export function extractStateFromUserText(text: string | undefined): string {
   if (text === undefined) return "";
-  const match = /\bin\s+([A-Za-z]{2,})\b/.exec(text);
-  if (match === null) return "";
-  const candidate = match[1] ?? "";
-  // The chat path sends full state names sometimes ("in Texas"); the
-  // widget normalizes to the two-letter postal code via lookup. To keep
-  // this helper standalone (no state-name table here), we surface the
-  // first two letters uppercased; the widget validates length=2 before
-  // submitting, so a wrong fallback turns into a visible validation
-  // error rather than a silent bad lookup.
-  return candidate.slice(0, 2).toUpperCase();
+  // The trailing token may be a two-letter postal code ("in TX") or a
+  // full state name ("in Texas") — both are common. We capture every
+  // " in <up-to-3-word-token>" occurrence, then for each capture try
+  // the full phrase first and fall back to progressively shorter
+  // suffixes through `toStateCodeOrEmpty`. That handles multi-word
+  // names ("New York", "North Carolina") AND filler tokens
+  // ("in Austin Texas" → resolves to "Texas"). No US state name has
+  // more than 3 words ("District of Columbia").
+  //
+  // The earlier bug this fixes: a naive `.slice(0, 2).toUpperCase()`
+  // turned "Texas" into "TE", which is not a valid postal code, and
+  // the chat-path candidate-click then bounced through a server-side
+  // format_error. Caught in the qa-adversary pass on commit c1d2da5.
+  const re = /\bin\s+([A-Za-z][A-Za-z\s]{1,30})\b/gi;
+  const matches = [...text.matchAll(re)];
+  for (const match of matches) {
+    const captured = (match[1] ?? "").trim().replace(/\s+/g, " ");
+    if (captured === "") continue;
+    const words = captured.split(" ");
+    for (let take = words.length; take >= 1; take -= 1) {
+      const tail = words.slice(words.length - take).join(" ");
+      const code = toStateCodeOrEmpty(tail);
+      if (code !== "") return code;
+    }
+  }
+  return "";
 }
 
 function isResolvedLookup(value: unknown): value is ResolvedLookupView {

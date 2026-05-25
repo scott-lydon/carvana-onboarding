@@ -38,6 +38,61 @@ export function parseStateCode(input: string): StateCode {
 }
 
 /**
+ * Map of full state name (uppercased) → postal code. Used by
+ * {@link toStateCodeOrEmpty} to convert user-typed prose like "Texas"
+ * into the lookup-API contract's two-letter code. Covers all 50 states
+ * plus DC and PR.
+ *
+ * Kept here next to `STATE_CODES` so future state-list edits update
+ * both surfaces in one place. If you ever add Guam or another US
+ * territory to STATE_CODES, add it here too.
+ */
+const STATE_NAME_TO_CODE: ReadonlyMap<string, StateCode> = new Map([
+  ["ALABAMA", "AL"], ["ALASKA", "AK"], ["ARIZONA", "AZ"], ["ARKANSAS", "AR"],
+  ["CALIFORNIA", "CA"], ["COLORADO", "CO"], ["CONNECTICUT", "CT"],
+  ["DELAWARE", "DE"], ["DISTRICT OF COLUMBIA", "DC"], ["FLORIDA", "FL"],
+  ["GEORGIA", "GA"], ["HAWAII", "HI"], ["IDAHO", "ID"], ["ILLINOIS", "IL"],
+  ["INDIANA", "IN"], ["IOWA", "IA"], ["KANSAS", "KS"], ["KENTUCKY", "KY"],
+  ["LOUISIANA", "LA"], ["MAINE", "ME"], ["MARYLAND", "MD"],
+  ["MASSACHUSETTS", "MA"], ["MICHIGAN", "MI"], ["MINNESOTA", "MN"],
+  ["MISSISSIPPI", "MS"], ["MISSOURI", "MO"], ["MONTANA", "MT"],
+  ["NEBRASKA", "NE"], ["NEVADA", "NV"], ["NEW HAMPSHIRE", "NH"],
+  ["NEW JERSEY", "NJ"], ["NEW MEXICO", "NM"], ["NEW YORK", "NY"],
+  ["NORTH CAROLINA", "NC"], ["NORTH DAKOTA", "ND"], ["OHIO", "OH"],
+  ["OKLAHOMA", "OK"], ["OREGON", "OR"], ["PENNSYLVANIA", "PA"],
+  ["PUERTO RICO", "PR"], ["RHODE ISLAND", "RI"], ["SOUTH CAROLINA", "SC"],
+  ["SOUTH DAKOTA", "SD"], ["TENNESSEE", "TN"], ["TEXAS", "TX"],
+  ["UTAH", "UT"], ["VERMONT", "VT"], ["VIRGINIA", "VA"],
+  ["WASHINGTON", "WA"], ["WEST VIRGINIA", "WV"], ["WISCONSIN", "WI"],
+  ["WYOMING", "WY"],
+]);
+
+/**
+ * Best-effort conversion of free-text state mention to a postal code.
+ * Returns "" (empty string, NOT a StateCode) when the input is not a
+ * recognized two-letter code AND not a recognized full state name.
+ *
+ * Use this when parsing prose like "my plate is XRJ4041 in Texas":
+ * the caller already knows the value is best-effort and falls back to
+ * prompting the user when this returns empty.
+ *
+ * Non-throwing on purpose. Callers that need a guaranteed-valid code
+ * should use {@link parseStateCode} instead.
+ *
+ * Accepts inputs with surrounding whitespace and any case.
+ */
+export function toStateCodeOrEmpty(input: string): StateCode | "" {
+  if (typeof input !== "string") return "";
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return "";
+  const upper = trimmed.toUpperCase();
+  if (STATE_CODE_SET.has(upper)) return upper as StateCode;
+  const fromName = STATE_NAME_TO_CODE.get(upper);
+  if (fromName !== undefined) return fromName;
+  return "";
+}
+
+/**
  * License plate, normalized to alphanumeric uppercase. The normalization
  * layer is the FIRST line of defense against the Texas asterisk bug (EC1)
  * and the whitespace / dash issues (EC4). Constructor strips all non-
