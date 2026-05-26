@@ -1,0 +1,15 @@
+{
+  "id": "021-empathy-routing-walk-away",
+  "category": "empathy_routing",
+  "description": "When the user asks whether they can change their mind / back out, the chatbot MUST call get_support_content with topic=walk_away_policy. The 7-day walk-away window is a Carvana brand promise; restating it from memory rather than from the pre-baked card is a regression because the timing could drift away from the official policy in a future card edit.",
+  "turns": [
+    { "message": "can I change my mind after I accept the offer?" }
+  ],
+  "assertions": {
+    "mustCallTools": ["get_support_content"],
+    "toolResultKindIs": {
+      "get_support_content": ["support_content"]
+    },
+    "minToolUseCount": 1
+  }
+}

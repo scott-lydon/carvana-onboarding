@@ -1,0 +1,15 @@
+{
+  "id": "003-tool-routing-no-lookup-for-greeting",
+  "category": "tool_routing",
+  "description": "When the user opens with a bare greeting and no plate or VIN, the chatbot MUST NOT call lookup_plate or lookup_vin (it has nothing to look up). It should respond in prose and prompt for the plate or VIN. Catches regressions where a tool gets fired on every turn.",
+  "turns": [
+    { "message": "hi, I want to sell my car" }
+  ],
+  "assertions": {
+    "mustNotCallTools": ["lookup_plate", "lookup_vin", "generate_offer"],
+    "maxToolUseCount": 0,
+    "proseMustMatch": [
+      { "pattern": "(plate|vin|sticker|registration)", "flags": "i" }
+    ]
+  }
+}

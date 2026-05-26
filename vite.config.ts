@@ -20,6 +20,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./tests/setup.ts"],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
-    exclude: ["tests/e2e/**", "node_modules"],
+    // tests/eval/** is excluded from the default suite because it requires
+    // live Anthropic + CarsXE credentials and runs via `npm run test:eval`
+    // against a dedicated config (tests/eval/vitest.eval.config.ts).
+    exclude: ["tests/e2e/**", "tests/eval/**", "node_modules"],
   },
 });

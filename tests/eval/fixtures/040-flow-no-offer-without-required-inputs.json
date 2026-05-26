@@ -1,0 +1,15 @@
+{
+  "id": "040-flow-no-offer-without-required-inputs",
+  "category": "flow_ordering",
+  "description": "The chatbot MUST NOT call generate_offer until it has at least: vehicle (year/make/model), mileage, condition tier, and loan-status confirmation. After a single bare greeting it has none of those, so generate_offer cannot fire. Catches regressions where the chatbot is too eager to demo the offer card with fabricated inputs.",
+  "turns": [
+    { "message": "give me an offer for my car" }
+  ],
+  "assertions": {
+    "mustNotCallTools": ["generate_offer"],
+    "maxToolUseCount": 0,
+    "proseMustMatch": [
+      { "pattern": "(plate|vin|year|make|model|tell me)", "flags": "i" }
+    ]
+  }
+}

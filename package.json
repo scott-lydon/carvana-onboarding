@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "test:property": "vitest run tests/property --passWithNoTests",
     "test:e2e": "playwright test",
+    "test:eval": "vitest run --config tests/eval/vitest.eval.config.ts",
     "test:all": "npm run typecheck && npm run lint && npm run test && npm run test:property && npm run test:e2e",
     "perf:smoke": "PERF_PROFILE=smoke k6 run scripts/perf/load.k6.js",
     "perf:load": "PERF_PROFILE=load k6 run scripts/perf/load.k6.js"

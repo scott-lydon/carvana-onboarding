@@ -1,0 +1,15 @@
+{
+  "id": "031-facts-routing-offer-validity",
+  "category": "facts_routing",
+  "description": "Offer validity window (7 days OR 1,000 miles) is a specific Carvana policy fact. The chatbot MUST call lookup_carvana_facts with topic=offer_validity_window rather than answering from training data, because Carvana's official window has changed historically and the knowledge base is the contracted source of truth.",
+  "turns": [
+    { "message": "how long is the offer good for? does it expire?" }
+  ],
+  "assertions": {
+    "mustCallTools": ["lookup_carvana_facts"],
+    "toolResultKindIs": {
+      "lookup_carvana_facts": ["carvana_fact", "fact_not_yet_populated"]
+    },
+    "minToolUseCount": 1
+  }
+}

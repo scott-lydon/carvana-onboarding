@@ -1,0 +1,18 @@
+{
+  "id": "001-tool-routing-plate-lookup",
+  "category": "tool_routing",
+  "description": "When the user supplies a plate and a US state code, the chatbot MUST call lookup_plate with that plate and state. This is the most-trafficked happy-path route in the production chat surface and the first thing a graded reviewer will probe.",
+  "turns": [
+    { "message": "my plate is XRJ4041 in Texas" }
+  ],
+  "requiredEnv": ["CARSXE_API_KEY"],
+  "assertions": {
+    "mustCallTools": ["lookup_plate"],
+    "mustNotCallTools": ["lookup_vin"],
+    "toolResultKindIs": {
+      "lookup_plate": ["resolved", "not_found", "transient_error", "bot_detected"]
+    },
+    "minToolUseCount": 1,
+    "maxToolUseCount": 3
+  }
+}

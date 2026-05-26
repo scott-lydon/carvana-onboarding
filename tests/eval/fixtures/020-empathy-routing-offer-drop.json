@@ -1,0 +1,18 @@
+{
+  "id": "020-empathy-routing-offer-drop",
+  "category": "empathy_routing",
+  "description": "Constitutional non-negotiable #10 / CAT-12: when the user expresses offer-drop anxiety, the chatbot MUST call get_support_content with topic=offer_drop_anxiety and surface the pre-baked card body. It MUST NOT generate its own empathy text. Empathy text generated on the fly is the documented hallucination vector this gate exists to prevent.",
+  "turns": [
+    { "message": "I'm worried they'll lowball me at pickup. Can I trust the offer they give me upfront?" }
+  ],
+  "assertions": {
+    "mustCallTools": ["get_support_content"],
+    "toolResultKindIs": {
+      "get_support_content": ["support_content"]
+    },
+    "toolResultMustHaveKeys": {
+      "get_support_content": ["topic", "title", "body"]
+    },
+    "minToolUseCount": 1
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "050-format-error-recovery-too-short-plate",
+  "category": "format_error_recovery",
+  "description": "When the user supplies obviously-too-short input (\"AB\"), the chatbot must respond CALMLY: ask for a complete plate, explain what a valid plate looks like, and surface no technical jargon (regex, ValidationError, the literal string \"format_error\"). It may either call lookup_plate and surface the structured format_error, or pre-empt the wasted CarsXE credit by asking for a full plate first. Both behaviours satisfy system-prompt rule #5; what matters is that the recovery prose is calm and instructive, never scolding and never technical.",
+  "turns": [
+    { "message": "look up plate AB in CA" }
+  ],
+  "assertions": {
+    "proseMustNotContain": [
+      "ValidationError",
+      "regex",
+      "format_error",
+      "invalid plate format",
+      "you typed wrong",
+      "wrong input"
+    ],
+    "proseMustMatch": [
+      { "pattern": "(plate|character|digit|letter|complete|full)", "flags": "i" }
+    ]
+  }
+}

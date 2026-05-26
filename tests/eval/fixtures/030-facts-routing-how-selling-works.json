@@ -1,0 +1,15 @@
+{
+  "id": "030-facts-routing-how-selling-works",
+  "category": "facts_routing",
+  "description": "When the user asks how Carvana's selling process works, the chatbot MUST call lookup_carvana_facts with topic=how_selling_works. Inventing the process steps in prose is a hallucination vector; the knowledge base is the single source of truth and ships a clickable carvana.com source link with every fact.",
+  "turns": [
+    { "message": "how does selling my car to Carvana actually work? what are the steps?" }
+  ],
+  "assertions": {
+    "mustCallTools": ["lookup_carvana_facts"],
+    "toolResultKindIs": {
+      "lookup_carvana_facts": ["carvana_fact", "fact_not_yet_populated"]
+    },
+    "minToolUseCount": 1
+  }
+}

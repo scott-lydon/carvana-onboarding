@@ -1,0 +1,17 @@
+{
+  "id": "002-tool-routing-vin-with-permutation",
+  "category": "tool_routing",
+  "description": "When the user supplies a 17-character VIN with an embedded I, O, or Q (which never appear in real VINs), the chatbot MUST call lookup_vin and pass it the literal user-provided string. The server-side permutation pass swaps those letters to 1/0 before the cascade call; the chatbot must NOT try to normalize them in its reply text.",
+  "turns": [
+    { "message": "can you check this VIN: 1HGBH41JXMN1O9186 (yes that has letter O, copying from the registration)" }
+  ],
+  "requiredEnv": ["CARSXE_API_KEY"],
+  "assertions": {
+    "mustCallTools": ["lookup_vin"],
+    "mustNotCallTools": ["lookup_plate"],
+    "toolResultKindIs": {
+      "lookup_vin": ["resolved", "not_found", "transient_error", "bot_detected", "format_error"]
+    },
+    "minToolUseCount": 1
+  }
+}
